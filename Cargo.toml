@@ -1,0 +1,11 @@
+[package]
+authors = ["Luca Barbato <lu_zero@gentoo.org>"]
+edition = "2018"
+name = "tcptunnel"
+version = "0.1.0"
+
+[dependencies]
+bytes = "0.4.12"
+tokio = "0.1.21"
+tk-listen = "0.2.1"
+structopt = "0.2"
