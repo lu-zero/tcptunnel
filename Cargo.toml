@@ -8,5 +8,4 @@ license = "GPL-2.0-or-later"
 [dependencies]
 bytes = "0.4.12"
 tokio = "0.1.21"
-tk-listen = "0.2.1"
 structopt = "0.2"
