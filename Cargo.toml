@@ -3,6 +3,7 @@ authors = ["Luca Barbato <lu_zero@gentoo.org>"]
 edition = "2018"
 name = "tcptunnel"
 version = "0.1.0"
+license = "GPL-2.0-or-later"
 
 [dependencies]
 bytes = "0.4.12"
