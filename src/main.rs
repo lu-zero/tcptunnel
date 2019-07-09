@@ -1,5 +1,6 @@
 
 use std::io;
+use std::time::{Instant, Duration};
 
 use tokio::prelude::*;
 use tokio::net::*;
@@ -42,7 +43,16 @@ fn udp_to_tcp(udp_addr: &SocketAddr, tcp_addr: &SocketAddr) {
     let srv = tcp.map(|w| {
         let tcp_sink = FramedWrite::new(w, BytesCodec::new());
         let (_udp_sink, udp_stream) = UdpFramed::new(udp, BytesCodec::new()).split();
-        let read = udp_stream.map(|(msg, _addr)| {
+        let mut now = Instant::now();
+        let mut size = 0;
+        let read = udp_stream.map(move |(msg, _addr)| {
+            let elapsed = now.elapsed();
+            if elapsed > Duration::from_secs(1) {
+                eprint!("bps {:}\r", size as f32 / (elapsed.as_millis() * 1000) as f32);
+                now = Instant::now();
+            } else {
+                size += msg.len();
+            }
             // println!("recv: {} from {:?}", String::from_utf8_lossy(&msg), addr);
             msg.freeze()
         });
@@ -62,9 +72,16 @@ fn tcp_to_udp(udp_addr: &SocketAddr, tcp_addr: &SocketAddr) {
     let srv = tcp.map(move |w| {
         let tcp_stream = FramedRead::new(w, ChunkDecoder::new(PACKET_SIZE));
         let (udp_sink, _udp_stream) = UdpFramed::new(udp, BytesCodec::new()).split();
-
+        let mut now = Instant::now();
+        let mut size = 0;
         let read = tcp_stream.map(move |buf| {
-            // println!("sending: {}", String::from_utf8_lossy(&buf));
+            let elapsed = now.elapsed();
+            if elapsed > Duration::from_secs(1) {
+                eprint!("bps {:}\r", size as f32 / (elapsed.as_millis() * 1000) as f32);
+                now = Instant::now();
+            } else {
+                size += buf.len();
+            }            // println!("sending: {}", String::from_utf8_lossy(&buf));
             (buf.freeze(), udp_addr)
         });
 
