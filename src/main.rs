@@ -35,10 +35,16 @@ impl Decoder for ChunkDecoder {
     }
 }
 
-fn udp_to_tcp(udp_addr: &SocketAddr, tcp_addr: &SocketAddr) {
+fn udp_to_tcp(udp_addr: &SocketAddr, tcp_addr: &SocketAddr, udp_mcast_interface: &Option<Ipv4Addr>) {
     let tcp = TcpStream::connect(tcp_addr);
     let udp = UdpSocket::bind(udp_addr).unwrap();
     // println!("local udp {:?}", udp);
+
+    if udp_addr.ip().is_multicast() {
+        if let IpAddr::V4(addr) = udp_addr.ip() {
+            udp.join_multicast_v4(&addr, udp_mcast_interface.as_ref().unwrap_or(&Ipv4Addr::UNSPECIFIED)).expect("cannot join group");
+        }
+    }
 
     let srv = tcp.map(|w| {
         let tcp_sink = FramedWrite::new(w, BytesCodec::new());
@@ -64,10 +70,16 @@ fn udp_to_tcp(udp_addr: &SocketAddr, tcp_addr: &SocketAddr) {
             .map_err(|e| println!("error {:?}", e)));
 }
 
-fn tcp_to_udp(udp_addr: &SocketAddr, tcp_addr: &SocketAddr) {
+fn tcp_to_udp(udp_addr: &SocketAddr, tcp_addr: &SocketAddr, udp_mcast_interface: &Option<Ipv4Addr>) {
     let tcp = TcpStream::connect(tcp_addr);
     let udp = UdpSocket::bind(&"127.0.0.1:0".parse().unwrap()).unwrap();
     let udp_addr = udp_addr.clone();
+
+    if udp_addr.ip().is_multicast() {
+        if let IpAddr::V4(addr) = udp_addr.ip() {
+            udp.join_multicast_v4(&addr, udp_mcast_interface.as_ref().unwrap_or(&Ipv4Addr::UNSPECIFIED)).expect("cannot join group");
+        }
+    }
 
     let srv = tcp.map(move |w| {
         let tcp_stream = FramedRead::new(w, ChunkDecoder::new(PACKET_SIZE));
@@ -122,10 +134,13 @@ fn tcp_to_udp_listen(udp_addr: &SocketAddr, tcp_addr: &SocketAddr) {
 
 use structopt::StructOpt;
 
-use std::net::SocketAddr;
+use std::net::{SocketAddr, Ipv4Addr, IpAddr};
 
 #[derive(Debug, StructOpt)]
 struct Opt {
+    /// UDP multicast interface address in `ipv4` format
+    #[structopt(short="i", long, name="MCAST_INTERFACE_ADDR")]
+    udp_mcast_interface: Option<Ipv4Addr>,
     /// UDP address in `ip:port` format
     #[structopt(short, long, name="UDP_ADDR")]
     udp_addr: SocketAddr,
@@ -145,9 +160,9 @@ fn main() {
 
     if !opt.send_tcp {
         eprintln!("Sending TCP data to UDP {:?}", opt.tcp_addr);
-        tcp_to_udp(&opt.udp_addr, &opt.tcp_addr);
+        tcp_to_udp(&opt.udp_addr, &opt.tcp_addr, &opt.udp_mcast_interface);
     } else {
         eprintln!("Sending UDP data to TCP {:?}", opt.tcp_addr);
-        udp_to_tcp(&opt.udp_addr, &opt.tcp_addr);
+        udp_to_tcp(&opt.udp_addr, &opt.tcp_addr, &opt.udp_mcast_interface);
     }
 }
