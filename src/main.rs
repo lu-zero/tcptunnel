@@ -68,6 +68,7 @@ fn udp_to_tcp(
                     size as f32 / (elapsed.as_millis() * 1000) as f32
                 );
                 now = Instant::now();
+                size = 0;
             } else {
                 size += msg.len();
             }
