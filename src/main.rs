@@ -1,11 +1,10 @@
-
 use std::io;
-use std::time::{Instant, Duration};
+use std::time::{Duration, Instant};
 
-use tokio::prelude::*;
-use tokio::net::*;
-use tokio::codec::{Decoder, BytesCodec, FramedRead, FramedWrite};
 use bytes::BytesMut;
+use tokio::codec::{BytesCodec, Decoder, FramedRead, FramedWrite};
+use tokio::net::*;
+use tokio::prelude::*;
 
 struct ChunkDecoder {
     size: usize,
@@ -35,14 +34,24 @@ impl Decoder for ChunkDecoder {
     }
 }
 
-fn udp_to_tcp(udp_addr: &SocketAddr, tcp_addr: &SocketAddr, udp_mcast_interface: &Option<Ipv4Addr>) {
+fn udp_to_tcp(
+    udp_addr: &SocketAddr,
+    tcp_addr: &SocketAddr,
+    udp_mcast_interface: &Option<Ipv4Addr>,
+) {
     let tcp = TcpStream::connect(tcp_addr);
     let udp = UdpSocket::bind(udp_addr).unwrap();
     // println!("local udp {:?}", udp);
 
     if udp_addr.ip().is_multicast() {
         if let IpAddr::V4(addr) = udp_addr.ip() {
-            udp.join_multicast_v4(&addr, udp_mcast_interface.as_ref().unwrap_or(&Ipv4Addr::UNSPECIFIED)).expect("cannot join group");
+            udp.join_multicast_v4(
+                &addr,
+                udp_mcast_interface
+                    .as_ref()
+                    .unwrap_or(&Ipv4Addr::UNSPECIFIED),
+            )
+            .expect("cannot join group");
         }
     }
 
@@ -54,7 +63,10 @@ fn udp_to_tcp(udp_addr: &SocketAddr, tcp_addr: &SocketAddr, udp_mcast_interface:
         let read = udp_stream.map(move |(msg, _addr)| {
             let elapsed = now.elapsed();
             if elapsed > Duration::from_secs(1) {
-                eprint!("bps {:}\r", size as f32 / (elapsed.as_millis() * 1000) as f32);
+                eprint!(
+                    "bps {:}\r",
+                    size as f32 / (elapsed.as_millis() * 1000) as f32
+                );
                 now = Instant::now();
             } else {
                 size += msg.len();
@@ -63,21 +75,35 @@ fn udp_to_tcp(udp_addr: &SocketAddr, tcp_addr: &SocketAddr, udp_mcast_interface:
             msg.freeze()
         });
 
-        tokio::spawn(tcp_sink.send_all(read).map(|_| ()).map_err(|e| println!("{:?}", e)));
+        tokio::spawn(
+            tcp_sink
+                .send_all(read)
+                .map(|_| ())
+                .map_err(|e| println!("{:?}", e)),
+        );
     });
 
-    tokio::run(srv
-            .map_err(|e| println!("error {:?}", e)));
+    tokio::run(srv.map_err(|e| println!("error {:?}", e)));
 }
 
-fn tcp_to_udp(udp_addr: &SocketAddr, tcp_addr: &SocketAddr, udp_mcast_interface: &Option<Ipv4Addr>) {
+fn tcp_to_udp(
+    udp_addr: &SocketAddr,
+    tcp_addr: &SocketAddr,
+    udp_mcast_interface: &Option<Ipv4Addr>,
+) {
     let tcp = TcpStream::connect(tcp_addr);
     let udp = UdpSocket::bind(&"127.0.0.1:0".parse().unwrap()).unwrap();
     let udp_addr = udp_addr.clone();
 
     if udp_addr.ip().is_multicast() {
         if let IpAddr::V4(addr) = udp_addr.ip() {
-            udp.join_multicast_v4(&addr, udp_mcast_interface.as_ref().unwrap_or(&Ipv4Addr::UNSPECIFIED)).expect("cannot join group");
+            udp.join_multicast_v4(
+                &addr,
+                udp_mcast_interface
+                    .as_ref()
+                    .unwrap_or(&Ipv4Addr::UNSPECIFIED),
+            )
+            .expect("cannot join group");
         }
     }
 
@@ -89,15 +115,23 @@ fn tcp_to_udp(udp_addr: &SocketAddr, tcp_addr: &SocketAddr, udp_mcast_interface:
         let read = tcp_stream.map(move |buf| {
             let elapsed = now.elapsed();
             if elapsed > Duration::from_secs(1) {
-                eprint!("bps {:}\r", size as f32 / (elapsed.as_millis() * 1000) as f32);
+                eprint!(
+                    "bps {:}\r",
+                    size as f32 / (elapsed.as_millis() * 1000) as f32
+                );
                 now = Instant::now();
             } else {
                 size += buf.len();
-            }            // println!("sending: {}", String::from_utf8_lossy(&buf));
+            } // println!("sending: {}", String::from_utf8_lossy(&buf));
             (buf.freeze(), udp_addr)
         });
 
-        tokio::spawn(udp_sink.send_all(read).map(|_| ()).map_err(|e| println!("{:?}", e)));
+        tokio::spawn(
+            udp_sink
+                .send_all(read)
+                .map(|_| ())
+                .map_err(|e| println!("{:?}", e)),
+        );
     });
 
     tokio::run(srv.map_err(|e| println!("error {:?}", e)));
@@ -134,18 +168,18 @@ fn tcp_to_udp_listen(udp_addr: &SocketAddr, tcp_addr: &SocketAddr) {
 
 use structopt::StructOpt;
 
-use std::net::{SocketAddr, Ipv4Addr, IpAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 #[derive(Debug, StructOpt)]
 struct Opt {
     /// UDP multicast interface address in `ipv4` format
-    #[structopt(short="i", long, name="MCAST_INTERFACE_ADDR")]
+    #[structopt(short = "i", long, name = "MCAST_INTERFACE_ADDR")]
     udp_mcast_interface: Option<Ipv4Addr>,
     /// UDP address in `ip:port` format
-    #[structopt(short, long, name="UDP_ADDR")]
+    #[structopt(short, long, name = "UDP_ADDR")]
     udp_addr: SocketAddr,
     /// TCP address in `ip:port` format
-    #[structopt(short, long, name="TCP_ADDR")]
+    #[structopt(short, long, name = "TCP_ADDR")]
     tcp_addr: SocketAddr,
     // Set to listen on the tcp port
     // #[structopt(short)]
