@@ -65,7 +65,7 @@ fn udp_to_tcp(
             if elapsed > Duration::from_secs(1) {
                 eprint!(
                     "bps {:}\r",
-                    size as f32 / (elapsed.as_millis() * 1000) as f32
+                    (size as f32 / elapsed.as_millis() as f32) * 8000f32
                 );
                 now = Instant::now();
                 size = 0;
