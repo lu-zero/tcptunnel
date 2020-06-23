@@ -42,7 +42,6 @@ fn udp_to_tcp(
 ) -> Result<()> {
     let tcp = TcpStream::connect(tcp_addr);
     let udp = UdpSocket::bind(udp_addr)?;
-    // println!("local udp {:?}", udp);
 
     if udp_addr.ip().is_multicast() {
         if let IpAddr::V4(addr) = udp_addr.ip() {
@@ -98,7 +97,8 @@ fn tcp_to_udp(
     let tcp = TcpStream::connect(tcp_addr);
     let udp_addr = udp_addr.clone();
 
-    let udp = UdpSocket::bind(&"127.0.0.1:0".parse().unwrap())?;
+    let localaddr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0);
+    let udp = UdpSocket::bind(&localaddr)?;
     if udp_addr.ip().is_multicast() {
         if let IpAddr::V4(addr) = udp_addr.ip() {
             udp.join_multicast_v4(
