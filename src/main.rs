@@ -201,10 +201,16 @@ fn main() -> Result<()> {
     let opt = Opt::from_args();
 
     if !opt.send_tcp {
-        eprintln!("Sending TCP data to UDP {:?}", opt.tcp_addr);
+        eprintln!(
+            "Sending TCP data to UDP {:?} -> {:?}",
+            opt.tcp_addr, opt.udp_addr
+        );
         tcp_to_udp(&opt.udp_addr, &opt.tcp_addr, &opt.udp_mcast_interface)?;
     } else {
-        eprintln!("Sending UDP data to TCP {:?}", opt.tcp_addr);
+        eprintln!(
+            "Sending UDP data to TCP {:?} -> {:?}",
+            opt.udp_addr, opt.tcp_addr
+        );
         udp_to_tcp(&opt.udp_addr, &opt.tcp_addr, &opt.udp_mcast_interface)?;
     }
 
