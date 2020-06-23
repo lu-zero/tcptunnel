@@ -93,9 +93,9 @@ fn tcp_to_udp(
     udp_mcast_interface: &Option<Ipv4Addr>,
 ) {
     let tcp = TcpStream::connect(tcp_addr);
-    let udp = UdpSocket::bind(&"127.0.0.1:0".parse().unwrap()).unwrap();
     let udp_addr = udp_addr.clone();
 
+    let udp = UdpSocket::bind(&"127.0.0.1:0".parse().unwrap()).unwrap();
     if udp_addr.ip().is_multicast() {
         if let IpAddr::V4(addr) = udp_addr.ip() {
             udp.join_multicast_v4(
@@ -106,6 +106,8 @@ fn tcp_to_udp(
             )
             .expect("cannot join group");
         }
+    } else {
+        udp.connect(&udp_addr).unwrap();
     }
 
     let srv = tcp.map(move |w| {
