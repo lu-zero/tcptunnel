@@ -109,8 +109,6 @@ fn tcp_to_udp(
             )
             .context("cannot join group")?;
         }
-    } else {
-        udp.connect(&udp_addr).context("Cannot connect")?;
     }
 
     let srv = tcp.map(move |w| {
