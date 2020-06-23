@@ -48,6 +48,9 @@ impl Opt {
                         .unwrap_or(&Ipv4Addr::UNSPECIFIED),
                 )
                 .context("cannot join group")?;
+                if let Some(ttl) = self.multicast_ttl {
+                    udp.set_multicast_ttl_v4(ttl)?;
+                }
             }
         }
 
@@ -100,6 +103,9 @@ impl Opt {
                         .unwrap_or(&Ipv4Addr::UNSPECIFIED),
                 )
                 .context("cannot join group")?;
+                if let Some(ttl) = self.multicast_ttl {
+                    udp.set_multicast_ttl_v4(ttl)?;
+                }
             }
         }
 
@@ -194,6 +200,9 @@ struct Opt {
     /// Send UDP data over the tcp connection
     #[structopt(short)]
     send_tcp: bool,
+    /// Multicast TTL
+    #[structopt(short, long)]
+    multicast_ttl: Option<u32>,
 }
 
 fn main() -> Result<()> {
