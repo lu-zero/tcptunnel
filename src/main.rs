@@ -80,11 +80,11 @@ fn udp_to_tcp(
             tcp_sink
                 .send_all(read)
                 .map(|_| ())
-                .map_err(|e| println!("{:?}", e)),
+                .map_err(|e| println!("TCPSink failure {:?}", e)),
         );
     });
 
-    tokio::run(srv.map_err(|e| println!("error {:?}", e)));
+    tokio::run(srv.map_err(|e| println!("TCPServer failure {:?}", e)));
 
     Ok(())
 }
@@ -136,11 +136,11 @@ fn tcp_to_udp(
             udp_sink
                 .send_all(read)
                 .map(|_| ())
-                .map_err(|e| println!("{:?}", e)),
+                .map_err(|e| println!("UDPSink failure {:?}", e)),
         );
     });
 
-    tokio::run(srv.map_err(|e| println!("error {:?}", e)));
+    tokio::run(srv.map_err(|e| println!("TCPServer failure {:?}", e)));
 
     Ok(())
 }
