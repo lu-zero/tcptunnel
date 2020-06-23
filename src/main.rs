@@ -176,7 +176,16 @@ fn tcp_to_udp_listen(udp_addr: &SocketAddr, tcp_addr: &SocketAddr) {
 
 use structopt::StructOpt;
 
+use std::net::ToSocketAddrs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+fn to_socket_addr(s: &str) -> Result<SocketAddr> {
+    let mut socks = s.to_socket_addrs()?;
+
+    socks
+        .next()
+        .ok_or(anyhow::anyhow!("No address for name {}", s))
+}
 
 #[derive(Debug, StructOpt)]
 struct Opt {
@@ -184,10 +193,10 @@ struct Opt {
     #[structopt(short = "i", long, name = "MCAST_INTERFACE_ADDR")]
     udp_mcast_interface: Option<Ipv4Addr>,
     /// UDP address in `ip:port` format
-    #[structopt(short, long, name = "UDP_ADDR")]
+    #[structopt(short, long, name = "UDP_ADDR", parse(try_from_str = to_socket_addr))]
     udp_addr: SocketAddr,
     /// TCP address in `ip:port` format
-    #[structopt(short, long, name = "TCP_ADDR")]
+    #[structopt(short, long, name = "TCP_ADDR", parse(try_from_str = to_socket_addr))]
     tcp_addr: SocketAddr,
     // Set to listen on the tcp port
     // #[structopt(short)]
