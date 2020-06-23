@@ -1,6 +1,7 @@
 use std::io;
 use std::time::{Duration, Instant};
 
+use anyhow::{Context, Result};
 use bytes::BytesMut;
 use tokio::codec::{BytesCodec, Decoder, FramedRead, FramedWrite};
 use tokio::net::*;
@@ -38,9 +39,9 @@ fn udp_to_tcp(
     udp_addr: &SocketAddr,
     tcp_addr: &SocketAddr,
     udp_mcast_interface: &Option<Ipv4Addr>,
-) {
+) -> Result<()> {
     let tcp = TcpStream::connect(tcp_addr);
-    let udp = UdpSocket::bind(udp_addr).unwrap();
+    let udp = UdpSocket::bind(udp_addr)?;
     // println!("local udp {:?}", udp);
 
     if udp_addr.ip().is_multicast() {
@@ -51,7 +52,7 @@ fn udp_to_tcp(
                     .as_ref()
                     .unwrap_or(&Ipv4Addr::UNSPECIFIED),
             )
-            .expect("cannot join group");
+            .context("cannot join group")?;
         }
     }
 
@@ -85,17 +86,19 @@ fn udp_to_tcp(
     });
 
     tokio::run(srv.map_err(|e| println!("error {:?}", e)));
+
+    Ok(())
 }
 
 fn tcp_to_udp(
     udp_addr: &SocketAddr,
     tcp_addr: &SocketAddr,
     udp_mcast_interface: &Option<Ipv4Addr>,
-) {
+) -> Result<()> {
     let tcp = TcpStream::connect(tcp_addr);
     let udp_addr = udp_addr.clone();
 
-    let udp = UdpSocket::bind(&"127.0.0.1:0".parse().unwrap()).unwrap();
+    let udp = UdpSocket::bind(&"127.0.0.1:0".parse().unwrap())?;
     if udp_addr.ip().is_multicast() {
         if let IpAddr::V4(addr) = udp_addr.ip() {
             udp.join_multicast_v4(
@@ -104,10 +107,10 @@ fn tcp_to_udp(
                     .as_ref()
                     .unwrap_or(&Ipv4Addr::UNSPECIFIED),
             )
-            .expect("cannot join group");
+            .context("cannot join group")?;
         }
     } else {
-        udp.connect(&udp_addr).unwrap();
+        udp.connect(&udp_addr).context("Cannot connect")?;
     }
 
     let srv = tcp.map(move |w| {
@@ -138,6 +141,8 @@ fn tcp_to_udp(
     });
 
     tokio::run(srv.map_err(|e| println!("error {:?}", e)));
+
+    Ok(())
 }
 
 /*
@@ -192,14 +197,16 @@ struct Opt {
     send_tcp: bool,
 }
 
-fn main() {
+fn main() -> Result<()> {
     let opt = Opt::from_args();
 
     if !opt.send_tcp {
         eprintln!("Sending TCP data to UDP {:?}", opt.tcp_addr);
-        tcp_to_udp(&opt.udp_addr, &opt.tcp_addr, &opt.udp_mcast_interface);
+        tcp_to_udp(&opt.udp_addr, &opt.tcp_addr, &opt.udp_mcast_interface)?;
     } else {
         eprintln!("Sending UDP data to TCP {:?}", opt.tcp_addr);
-        udp_to_tcp(&opt.udp_addr, &opt.tcp_addr, &opt.udp_mcast_interface);
+        udp_to_tcp(&opt.udp_addr, &opt.tcp_addr, &opt.udp_mcast_interface)?;
     }
+
+    Ok(())
 }
