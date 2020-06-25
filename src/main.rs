@@ -1,7 +1,7 @@
 use std::io;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use bytes::BytesMut;
 use tokio::codec::{BytesCodec, Decoder, FramedRead, FramedWrite};
 use tokio::net::*;
@@ -34,25 +34,47 @@ impl Decoder for ChunkDecoder {
         }
     }
 }
-impl Opt {
-    fn udp_to_tcp(&self) -> Result<()> {
-        let tcp = TcpStream::connect(&self.tcp_addr);
-        let udp = UdpSocket::bind(&self.udp_addr)?;
 
-        if self.udp_addr.ip().is_multicast() {
-            if let IpAddr::V4(addr) = self.udp_addr.ip() {
-                udp.join_multicast_v4(
-                    &addr,
-                    self.udp_mcast_interface
-                        .as_ref()
-                        .unwrap_or(&Ipv4Addr::UNSPECIFIED),
-                )
-                .context("cannot join group")?;
-                if let Some(ttl) = self.multicast_ttl {
-                    udp.set_multicast_ttl_v4(ttl)?;
+fn setup_multicast_v4(
+    udp: &UdpSocket,
+    udp_addr: &Ipv4Addr,
+    mcast_if_addr: &Ipv4Addr,
+    ttl: Option<u32>,
+) -> Result<()> {
+    udp.join_multicast_v4(udp_addr, mcast_if_addr)
+        .context("cannot join group")?;
+
+    if let Some(ttl) = ttl {
+        udp.set_multicast_ttl_v4(ttl)?;
+    }
+
+    Ok(())
+}
+
+impl Opt {
+    fn setup_udp(&self, addr: &SocketAddr) -> Result<UdpSocket> {
+        let udp = UdpSocket::bind(addr)?;
+        let udp_ip = self.udp_addr.ip();
+        if udp_ip.is_multicast() {
+            match udp_ip {
+                IpAddr::V4(ref addr) => {
+                    let mcast_if = match self.udp_mcast_interface {
+                        Some(IpAddr::V4(ref mcast_if)) => mcast_if,
+                        Some(_) => return Err(anyhow!("The multicast interface must use ipv4")),
+                        None => &Ipv4Addr::UNSPECIFIED,
+                    };
+                    setup_multicast_v4(&udp, addr, mcast_if, self.multicast_ttl)?
                 }
+                _ => todo!("ipv6 support"),
             }
         }
+
+        Ok(udp)
+    }
+
+    fn udp_to_tcp(&self) -> Result<()> {
+        let tcp = TcpStream::connect(&self.tcp_addr);
+        let udp = self.setup_udp(&self.udp_addr)?;
 
         let srv = tcp.map(|w| {
             let tcp_sink = FramedWrite::new(w, BytesCodec::new());
@@ -93,21 +115,7 @@ impl Opt {
         let udp_addr = self.udp_addr.clone();
 
         let localaddr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0);
-        let udp = UdpSocket::bind(&localaddr)?;
-        if self.udp_addr.ip().is_multicast() {
-            if let IpAddr::V4(addr) = self.udp_addr.ip() {
-                udp.join_multicast_v4(
-                    &addr,
-                    self.udp_mcast_interface
-                        .as_ref()
-                        .unwrap_or(&Ipv4Addr::UNSPECIFIED),
-                )
-                .context("cannot join group")?;
-                if let Some(ttl) = self.multicast_ttl {
-                    udp.set_multicast_ttl_v4(ttl)?;
-                }
-            }
-        }
+        let udp = self.setup_udp(&localaddr)?;
 
         let srv = tcp.map(move |w| {
             let tcp_stream = FramedRead::new(w, ChunkDecoder::new(PACKET_SIZE));
@@ -187,7 +195,7 @@ fn to_socket_addr(s: &str) -> Result<SocketAddr> {
 struct Opt {
     /// UDP multicast interface address in `ipv4` format
     #[structopt(short = "i", long, name = "MCAST_INTERFACE_ADDR")]
-    udp_mcast_interface: Option<Ipv4Addr>,
+    udp_mcast_interface: Option<IpAddr>,
     /// UDP address in `ip:port` format
     #[structopt(short, long, name = "UDP_ADDR", parse(try_from_str = to_socket_addr))]
     udp_addr: SocketAddr,
