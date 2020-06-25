@@ -1,7 +1,7 @@
 use std::io;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use bytes::BytesMut;
 use tokio::codec::{BytesCodec, Decoder, FramedRead, FramedWrite};
 use tokio::net::*;
@@ -54,18 +54,29 @@ fn setup_multicast_v4(
 impl Opt {
     fn setup_udp(&self, addr: &SocketAddr) -> Result<UdpSocket> {
         let udp = UdpSocket::bind(addr)?;
+
         let udp_ip = self.udp_addr.ip();
         if udp_ip.is_multicast() {
             match udp_ip {
                 IpAddr::V4(ref addr) => {
                     let mcast_if = match self.udp_mcast_interface {
-                        Some(IpAddr::V4(ref mcast_if)) => mcast_if,
-                        Some(_) => return Err(anyhow!("The multicast interface must use ipv4")),
+                        Some(ref mcast_if) => mcast_if,
                         None => &Ipv4Addr::UNSPECIFIED,
                     };
                     setup_multicast_v4(&udp, addr, mcast_if, self.multicast_ttl)?
                 }
-                _ => todo!("ipv6 support"),
+                IpAddr::V6(ref addr) => {
+                    let mcast_idx = match self.udp_mcast_interface_index {
+                        Some(mcast_idx) => mcast_idx,
+                        None => 0,
+                    };
+
+                    udp.join_multicast_v6(addr, mcast_idx)?;
+
+                    if let Some(_hops) = self.multicast_hops {
+                        todo!("multicast ipv6 hops requires socket2");
+                    }
+                }
             }
         }
 
@@ -195,7 +206,9 @@ fn to_socket_addr(s: &str) -> Result<SocketAddr> {
 struct Opt {
     /// UDP multicast interface address in `ipv4` format
     #[structopt(short = "i", long, name = "MCAST_INTERFACE_ADDR")]
-    udp_mcast_interface: Option<IpAddr>,
+    udp_mcast_interface: Option<Ipv4Addr>,
+    #[structopt(short = "i6", long, name = "MCAST_INTERFACE_INDEX")]
+    udp_mcast_interface_index: Option<u32>,
     /// UDP address in `ip:port` format
     #[structopt(short, long, name = "UDP_ADDR", parse(try_from_str = to_socket_addr))]
     udp_addr: SocketAddr,
@@ -209,8 +222,11 @@ struct Opt {
     #[structopt(short)]
     send_tcp: bool,
     /// Multicast TTL
-    #[structopt(short, long)]
+    #[structopt(long = "ttl")]
     multicast_ttl: Option<u32>,
+    /// IPv6 Multicast Hops (unsupported)
+    #[structopt(long = "hops")]
+    multicast_hops: Option<u32>,
 }
 
 fn main() -> Result<()> {
