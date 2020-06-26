@@ -128,7 +128,14 @@ impl Opt {
         let tcp = TcpStream::connect(&self.tcp_addr);
         let udp_addr = self.udp_addr.clone();
 
-        let localaddr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0);
+        let localaddr = SocketAddr::new(
+            if udp_addr.is_ipv4() {
+                Ipv4Addr::UNSPECIFIED.into()
+            } else {
+                Ipv6Addr::UNSPECIFIED.into()
+            },
+            0,
+        );
         let udp = self.setup_udp(localaddr)?;
 
         let srv = tcp.map(move |w| {
@@ -195,7 +202,7 @@ fn tcp_to_udp_listen(udp_addr: &SocketAddr, tcp_addr: &SocketAddr) {
 use structopt::StructOpt;
 
 use std::net::ToSocketAddrs;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 fn to_socket_addr(s: &str) -> Result<SocketAddr> {
     let mut socks = s.to_socket_addrs()?;
