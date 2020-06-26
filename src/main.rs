@@ -207,10 +207,11 @@ fn to_socket_addr(s: &str) -> Result<SocketAddr> {
 
 #[derive(Debug, StructOpt)]
 struct Opt {
-    /// UDP multicast interface address in `ipv4` format
-    #[structopt(short = "i", long, name = "MCAST_INTERFACE_ADDR")]
+    /// UDP multicast interface address (IPv4 only)
+    #[structopt(short = "a", long, name = "MCAST_INTERFACE_ADDR")]
     udp_mcast_interface: Option<Ipv4Addr>,
-    #[structopt(short = "i6", long, name = "MCAST_INTERFACE_INDEX")]
+    /// UDP multicast interface index (IPv6 only)
+    #[structopt(short = "i", long, name = "MCAST_INTERFACE_INDEX")]
     udp_mcast_interface_index: Option<u32>,
     /// UDP address in `ip:port` format
     #[structopt(short, long, name = "UDP_ADDR", parse(try_from_str = to_socket_addr))]
@@ -224,10 +225,10 @@ struct Opt {
     /// Send UDP data over the tcp connection
     #[structopt(short)]
     send_tcp: bool,
-    /// Multicast TTL
-    #[structopt(long = "ttl")]
+    /// IPv4 Multicast TTL
+    #[structopt(short = "m", long = "ttl")]
     multicast_ttl: Option<u32>,
-    /// IPv6 Multicast Hops (unsupported)
+    /// IPv6 Multicast Hops
     #[structopt(long = "hops")]
     multicast_hops: Option<u32>,
 }
