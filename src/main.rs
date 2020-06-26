@@ -49,7 +49,7 @@ impl Opt {
                 let udp = Socket::new(Domain::ipv4(), Type::dgram(), Some(Protocol::udp()))?;
                 udp.bind(&sockaddr)?;
                 if is_multicast {
-                    let mcast_if = match self.udp_mcast_interface {
+                    let mcast_if = match self.udp_mcast_interface_address {
                         Some(ref mcast_if) => mcast_if,
                         None => &Ipv4Addr::UNSPECIFIED,
                     };
@@ -216,7 +216,7 @@ fn to_socket_addr(s: &str) -> Result<SocketAddr> {
 struct Opt {
     /// UDP multicast interface address (IPv4 only)
     #[structopt(short = "a", long, name = "MCAST_INTERFACE_ADDR")]
-    udp_mcast_interface: Option<Ipv4Addr>,
+    udp_mcast_interface_address: Option<Ipv4Addr>,
     /// UDP multicast interface index (IPv6 only)
     #[structopt(short = "i", long, name = "MCAST_INTERFACE_INDEX")]
     udp_mcast_interface_index: Option<u32>,
