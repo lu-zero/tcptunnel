@@ -6,6 +6,7 @@ use bytes::BytesMut;
 use tokio::codec::{BytesCodec, Decoder, FramedRead, FramedWrite};
 use tokio::net::*;
 use tokio::prelude::*;
+use tokio::reactor::Handle;
 
 struct ChunkDecoder {
     size: usize,
@@ -35,37 +36,36 @@ impl Decoder for ChunkDecoder {
     }
 }
 
-fn setup_multicast_v4(
-    udp: &UdpSocket,
-    udp_addr: &Ipv4Addr,
-    mcast_if_addr: &Ipv4Addr,
-    ttl: Option<u32>,
-) -> Result<()> {
-    udp.join_multicast_v4(udp_addr, mcast_if_addr)
-        .context("cannot join group")?;
-
-    if let Some(ttl) = ttl {
-        udp.set_multicast_ttl_v4(ttl)?;
-    }
-
-    Ok(())
-}
-
 impl Opt {
-    fn setup_udp(&self, addr: &SocketAddr) -> Result<UdpSocket> {
-        let udp = UdpSocket::bind(addr)?;
+    fn setup_udp(&self, addr: SocketAddr) -> Result<UdpSocket> {
+        use socket2::*;
 
         let udp_ip = self.udp_addr.ip();
-        if udp_ip.is_multicast() {
-            match udp_ip {
-                IpAddr::V4(ref addr) => {
+        let is_multicast = udp_ip.is_multicast();
+        let sockaddr = SockAddr::from(addr);
+
+        let udp = match udp_ip {
+            IpAddr::V4(ref addr) => {
+                let udp = Socket::new(Domain::ipv4(), Type::dgram(), Some(Protocol::udp()))?;
+                udp.bind(&sockaddr)?;
+                if is_multicast {
                     let mcast_if = match self.udp_mcast_interface {
                         Some(ref mcast_if) => mcast_if,
                         None => &Ipv4Addr::UNSPECIFIED,
                     };
-                    setup_multicast_v4(&udp, addr, mcast_if, self.multicast_ttl)?
+                    udp.join_multicast_v4(addr, mcast_if)
+                        .context("cannot join group")?;
+
+                    if let Some(ttl) = self.multicast_ttl {
+                        udp.set_multicast_ttl_v4(ttl)?;
+                    }
                 }
-                IpAddr::V6(ref addr) => {
+                udp
+            }
+            IpAddr::V6(ref addr) => {
+                let udp = Socket::new(Domain::ipv6(), Type::dgram(), Some(Protocol::udp()))?;
+                udp.bind(&sockaddr)?;
+                if is_multicast {
                     let mcast_idx = match self.udp_mcast_interface_index {
                         Some(mcast_idx) => mcast_idx,
                         None => 0,
@@ -73,19 +73,22 @@ impl Opt {
 
                     udp.join_multicast_v6(addr, mcast_idx)?;
 
-                    if let Some(_hops) = self.multicast_hops {
-                        todo!("multicast ipv6 hops requires socket2");
+                    if let Some(hops) = self.multicast_hops {
+                        udp.set_multicast_hops_v6(hops)?;
                     }
                 }
+                udp
             }
-        }
+        };
+
+        let udp = UdpSocket::from_std(udp.into_udp_socket(), &Handle::default())?;
 
         Ok(udp)
     }
 
     fn udp_to_tcp(&self) -> Result<()> {
         let tcp = TcpStream::connect(&self.tcp_addr);
-        let udp = self.setup_udp(&self.udp_addr)?;
+        let udp = self.setup_udp(self.udp_addr)?;
 
         let srv = tcp.map(|w| {
             let tcp_sink = FramedWrite::new(w, BytesCodec::new());
@@ -126,7 +129,7 @@ impl Opt {
         let udp_addr = self.udp_addr.clone();
 
         let localaddr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0);
-        let udp = self.setup_udp(&localaddr)?;
+        let udp = self.setup_udp(localaddr)?;
 
         let srv = tcp.map(move |w| {
             let tcp_stream = FramedRead::new(w, ChunkDecoder::new(PACKET_SIZE));
