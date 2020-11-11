@@ -47,6 +47,7 @@ impl Opt {
         let udp = match udp_ip {
             IpAddr::V4(ref addr) => {
                 let udp = Socket::new(Domain::ipv4(), Type::dgram(), Some(Protocol::udp()))?;
+                udp.set_reuse_address(true)?;
                 udp.bind(&sockaddr)?;
                 if is_multicast {
                     let mcast_if = match self.udp_mcast_interface_address {
@@ -64,6 +65,7 @@ impl Opt {
             }
             IpAddr::V6(ref addr) => {
                 let udp = Socket::new(Domain::ipv6(), Type::dgram(), Some(Protocol::udp()))?;
+                udp.set_reuse_address(true)?;
                 udp.bind(&sockaddr)?;
                 if is_multicast {
                     let mcast_idx = match self.udp_mcast_interface_index {
