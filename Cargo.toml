@@ -10,4 +10,4 @@ bytes = "0.4.12"
 tokio = "0.1.21"
 structopt = "0.3"
 anyhow = "1.0"
-socket2 = "0.3"
+socket2 = { version = "0.3.17", features = ["reuseport"] }

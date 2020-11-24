@@ -48,6 +48,11 @@ impl Opt {
             IpAddr::V4(ref addr) => {
                 let udp = Socket::new(Domain::ipv4(), Type::dgram(), Some(Protocol::udp()))?;
                 udp.set_reuse_address(true)?;
+                udp.set_reuse_port(true)?;
+                if let Some(udp_buffer) = self.udp_buffer {
+                    udp.set_send_buffer_size(udp_buffer)?;
+                    udp.set_recv_buffer_size(udp_buffer)?;
+                }
                 udp.bind(&sockaddr)?;
                 if is_multicast {
                     let mcast_if = match self.udp_mcast_interface_address {
@@ -66,6 +71,11 @@ impl Opt {
             IpAddr::V6(ref addr) => {
                 let udp = Socket::new(Domain::ipv6(), Type::dgram(), Some(Protocol::udp()))?;
                 udp.set_reuse_address(true)?;
+                udp.set_reuse_port(true)?;
+                if let Some(udp_buffer) = self.udp_buffer {
+                    udp.set_send_buffer_size(udp_buffer)?;
+                    udp.set_recv_buffer_size(udp_buffer)?;
+                }
                 udp.bind(&sockaddr)?;
                 if is_multicast {
                     let mcast_idx = match self.udp_mcast_interface_index {
@@ -240,6 +250,9 @@ struct Opt {
     /// IPv6 Multicast Hops
     #[structopt(long = "hops")]
     multicast_hops: Option<u32>,
+    /// UDP OS send/receive buffer in bytes
+    #[structopt(long = "udp_buffer")]
+    udp_buffer: Option<usize>,
 }
 
 fn main() -> Result<()> {
