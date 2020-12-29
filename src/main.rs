@@ -3,10 +3,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use bytes::BytesMut;
-use tokio::codec::{BytesCodec, Decoder, FramedRead, FramedWrite};
+use futures::stream::{StreamExt, TryStreamExt};
 use tokio::net::*;
-use tokio::prelude::*;
-use tokio::reactor::Handle;
+use tokio_util::codec::{BytesCodec, Decoder, FramedRead, FramedWrite};
+use tokio_util::udp::UdpFramed;
 
 struct ChunkDecoder {
     size: usize,
@@ -93,51 +93,43 @@ impl Opt {
             }
         };
 
-        let udp = UdpSocket::from_std(udp.into_udp_socket(), &Handle::default())?;
+        let udp = UdpSocket::from_std(udp.into_udp_socket())?;
 
         Ok(udp)
     }
 
-    fn udp_to_tcp(&self) -> Result<()> {
-        let tcp = TcpStream::connect(&self.tcp_addr);
+    async fn udp_to_tcp(&self) -> Result<()> {
+        let tcp = TcpStream::connect(&self.tcp_addr).await?;
         let udp = self.setup_udp(self.udp_addr)?;
 
-        let srv = tcp.map(|w| {
-            let tcp_sink = FramedWrite::new(w, BytesCodec::new());
-            let (_udp_sink, udp_stream) = UdpFramed::new(udp, BytesCodec::new()).split();
-            let mut now = Instant::now();
-            let mut size = 0;
-            let read = udp_stream.map(move |(msg, _addr)| {
-                let elapsed = now.elapsed();
-                if elapsed > Duration::from_secs(1) {
-                    eprint!(
-                        "bps {:}\r",
-                        (size as f32 / elapsed.as_millis() as f32) * 8000f32
-                    );
-                    now = Instant::now();
-                    size = 0;
-                } else {
-                    size += msg.len();
-                }
-                // println!("recv: {} from {:?}", String::from_utf8_lossy(&msg), addr);
-                msg.freeze()
-            });
+        let tcp_sink = FramedWrite::new(tcp, BytesCodec::new());
+        let (_udp_sink, udp_stream) = UdpFramed::new(udp, BytesCodec::new()).split();
+        let mut now = Instant::now();
+        let mut size: usize = 0;
 
-            tokio::spawn(
-                tcp_sink
-                    .send_all(read)
-                    .map(|_| ())
-                    .map_err(|e| println!("TCPSink failure {:?}", e)),
-            );
+        let read = udp_stream.map_ok(move |(msg, _addr)| {
+            let elapsed = now.elapsed();
+            if elapsed > Duration::from_secs(1) {
+                eprint!(
+                    "bps {:}\r",
+                    (size as f32 / elapsed.as_millis() as f32) * 8000f32
+                );
+                now = Instant::now();
+                size = 0;
+            } else {
+                size += msg.len();
+            }
+            // println!("recv: {} from {:?}", String::from_utf8_lossy(&msg), addr);
+            msg.freeze()
         });
 
-        tokio::run(srv.map_err(|e| println!("TCPServer failure {:?}", e)));
+        read.forward(tcp_sink).await?;
 
         Ok(())
     }
 
-    fn tcp_to_udp(&self) -> Result<()> {
-        let tcp = TcpStream::connect(&self.tcp_addr);
+    async fn tcp_to_udp(&self) -> Result<()> {
+        let tcp = TcpStream::connect(&self.tcp_addr).await?;
         let udp_addr = self.udp_addr.clone();
 
         let localaddr = SocketAddr::new(
@@ -150,34 +142,27 @@ impl Opt {
         );
         let udp = self.setup_udp(localaddr)?;
 
-        let srv = tcp.map(move |w| {
-            let tcp_stream = FramedRead::new(w, ChunkDecoder::new(PACKET_SIZE));
-            let (udp_sink, _udp_stream) = UdpFramed::new(udp, BytesCodec::new()).split();
-            let mut now = Instant::now();
-            let mut size = 0;
-            let read = tcp_stream.map(move |buf| {
-                let elapsed = now.elapsed();
-                if elapsed > Duration::from_secs(1) {
-                    eprint!(
-                        "bps {:}\r",
-                        size as f32 / (elapsed.as_millis() * 1000) as f32
-                    );
-                    now = Instant::now();
-                } else {
-                    size += buf.len();
-                } // println!("sending: {}", String::from_utf8_lossy(&buf));
-                (buf.freeze(), udp_addr)
-            });
-
-            tokio::spawn(
-                udp_sink
-                    .send_all(read)
-                    .map(|_| ())
-                    .map_err(|e| println!("UDPSink failure {:?}", e)),
-            );
+        let tcp_stream = FramedRead::new(tcp, ChunkDecoder::new(PACKET_SIZE));
+        let (udp_sink, _udp_stream) = UdpFramed::new(udp, BytesCodec::new()).split();
+        let mut now = Instant::now();
+        let mut size = 0;
+        let read = tcp_stream.map_ok(move |buf| {
+            let elapsed = now.elapsed();
+            if elapsed > Duration::from_secs(1) {
+                eprint!(
+                    "bps {:}\r",
+                    size as f32 / (elapsed.as_millis() * 1000) as f32
+                );
+                now = Instant::now();
+            } else {
+                size += buf.len();
+            } // println!("sending: {}", String::from_utf8_lossy(&buf));
+            (buf.freeze(), udp_addr)
         });
 
-        tokio::run(srv.map_err(|e| println!("TCPServer failure {:?}", e)));
+        read.forward(udp_sink).await?;
+
+        // udp_sink.send_all(read).await?;
 
         Ok(())
     }
@@ -255,7 +240,8 @@ struct Opt {
     udp_buffer: Option<usize>,
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let opt = Opt::from_args();
 
     if !opt.send_tcp {
@@ -263,13 +249,13 @@ fn main() -> Result<()> {
             "Sending TCP data to UDP {:?} -> {:?}",
             opt.tcp_addr, opt.udp_addr
         );
-        opt.tcp_to_udp()?;
+        opt.tcp_to_udp().await?;
     } else {
         eprintln!(
             "Sending UDP data to TCP {:?} -> {:?}",
             opt.udp_addr, opt.tcp_addr
         );
-        opt.udp_to_tcp()?;
+        opt.udp_to_tcp().await?;
     }
 
     Ok(())
