@@ -2,10 +2,14 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures::stream::{StreamExt, TryStreamExt};
+use futures::Stream;
+use tokio::io::AsyncRead;
 use tokio::net::*;
 use tokio_util::codec::{BytesCodec, Decoder, FramedRead, FramedWrite};
+use tokio_util::compat::*;
+use tokio_util::io::ReaderStream;
 use tokio_util::udp::UdpFramed;
 
 struct ChunkDecoder {
@@ -98,16 +102,35 @@ impl Opt {
         Ok(udp)
     }
 
-    async fn udp_to_tcp(&self) -> Result<()> {
-        let tcp = TcpStream::connect(&self.tcp_addr).await?;
+    async fn udp_input(&self) -> Result<impl Stream<Item = Result<Bytes, std::io::Error>>> {
         let udp = self.setup_udp(self.udp_addr)?;
-
-        let tcp_sink = FramedWrite::new(tcp, BytesCodec::new());
         let (_udp_sink, udp_stream) = UdpFramed::new(udp, BytesCodec::new()).split();
-        let mut now = Instant::now();
-        let mut size: usize = 0;
+        Ok(udp_stream.map(|v| v.map(|(msg, _addr)| msg.freeze())))
+    }
 
-        let read = udp_stream.map_ok(move |(msg, _addr)| {
+    async fn srt_input(&self) -> Result<impl Stream<Item = Result<Bytes, std::io::Error>>> {
+        let mut srt = srt_rs::async_builder();
+
+        if let Some(udp_buffer) = self.udp_buffer {
+            srt = srt
+                .set_udp_receive_buffer(udp_buffer as i32)
+                .set_udp_send_buffer(udp_buffer as i32);
+        }
+
+        let (peer, _) = srt.listen(self.udp_addr, 1i32).unwrap().accept().await?;
+        Ok(ReaderStream::new(peer.compat()))
+    }
+
+    async fn forward_tcp<T>(&self, input_stream: T) -> Result<()>
+    where
+        T: Stream<Item = Result<Bytes, std::io::Error>>,
+    {
+        let tcp = TcpStream::connect(&self.tcp_addr).await?;
+        let tcp_sink = FramedWrite::new(tcp, BytesCodec::new());
+        let mut now = Instant::now();
+        let mut size = 0;
+
+        let read = input_stream.map_ok(move |msg| {
             let elapsed = now.elapsed();
             if elapsed > Duration::from_secs(1) {
                 eprint!(
@@ -119,8 +142,7 @@ impl Opt {
             } else {
                 size += msg.len();
             }
-            // println!("recv: {} from {:?}", String::from_utf8_lossy(&msg), addr);
-            msg.freeze()
+            msg
         });
 
         read.forward(tcp_sink).await?;
@@ -128,8 +150,18 @@ impl Opt {
         Ok(())
     }
 
-    async fn tcp_to_udp(&self) -> Result<()> {
-        let tcp = TcpStream::connect(&self.tcp_addr).await?;
+    async fn udp_to_tcp(&self) -> Result<()> {
+        if self.srt_udp {
+            self.forward_tcp(self.srt_input().await?).await
+        } else {
+            self.forward_tcp(self.udp_input().await?).await
+        }
+    }
+
+    async fn forward_udp<T>(&self, tcp_stream: FramedRead<T, ChunkDecoder>) -> Result<()>
+    where
+        T: AsyncRead,
+    {
         let udp_addr = self.udp_addr.clone();
 
         let localaddr = SocketAddr::new(
@@ -141,8 +173,6 @@ impl Opt {
             0,
         );
         let udp = self.setup_udp(localaddr)?;
-
-        let tcp_stream = FramedRead::new(tcp, ChunkDecoder::new(PACKET_SIZE));
         let (udp_sink, _udp_stream) = UdpFramed::new(udp, BytesCodec::new()).split();
         let mut now = Instant::now();
         let mut size = 0;
@@ -162,7 +192,56 @@ impl Opt {
 
         read.forward(udp_sink).await?;
 
-        // udp_sink.send_all(read).await?;
+        Ok(())
+    }
+
+    async fn forward_srt<T>(&self, tcp_stream: FramedRead<T, ChunkDecoder>) -> Result<()>
+    where
+        T: AsyncRead,
+    {
+        let mut srt = srt_rs::async_builder();
+
+        if let Some(udp_buffer) = self.udp_buffer {
+            srt = srt
+                .set_udp_receive_buffer(udp_buffer as i32)
+                .set_udp_send_buffer(udp_buffer as i32);
+        }
+
+        let srt_out = srt.connect(self.udp_addr)?.await?.compat_write();
+
+        let srt_sink = FramedWrite::new(srt_out, BytesCodec::new());
+
+        let mut now = Instant::now();
+        let mut size = 0;
+        let read = tcp_stream.map_ok(move |buf| {
+            let elapsed = now.elapsed();
+            if elapsed > Duration::from_secs(1) {
+                eprint!(
+                    "bps {:}\r",
+                    size as f32 / (elapsed.as_millis() * 1000) as f32
+                );
+                now = Instant::now();
+            } else {
+                size += buf.len();
+            }
+            buf.freeze()
+        });
+
+        read.forward(srt_sink).await?;
+
+        Ok(())
+    }
+
+    async fn tcp_to_udp(&self) -> Result<()> {
+        let tcp = TcpStream::connect(&self.tcp_addr).await?;
+
+        let tcp_stream = FramedRead::new(tcp, ChunkDecoder::new(PACKET_SIZE));
+
+        if self.srt_udp {
+            self.forward_srt(tcp_stream).await?;
+        } else {
+            self.forward_udp(tcp_stream).await?;
+        }
 
         Ok(())
     }
@@ -238,6 +317,9 @@ struct Opt {
     /// UDP OS send/receive buffer in bytes
     #[structopt(long = "udp_buffer")]
     udp_buffer: Option<usize>,
+    #[structopt(long = "srt")]
+    /// Use SRT instead of bare udp
+    srt_udp: bool,
 }
 
 #[tokio::main]
