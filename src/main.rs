@@ -326,16 +326,18 @@ struct Opt {
 async fn main() -> Result<()> {
     let opt = Opt::from_args();
 
+    let udp_or_srt = if opt.srt_udp { "SRT" } else { "UDP" };
+
     if !opt.send_tcp {
         eprintln!(
-            "Sending TCP data to UDP {:?} -> {:?}",
-            opt.tcp_addr, opt.udp_addr
+            "Sending TCP data to {} {:?} -> {:?}",
+            udp_or_srt, opt.tcp_addr, opt.udp_addr
         );
         opt.tcp_to_udp().await?;
     } else {
         eprintln!(
-            "Sending UDP data to TCP {:?} -> {:?}",
-            opt.udp_addr, opt.tcp_addr
+            "Sending {} data to TCP {:?} -> {:?}",
+            udp_or_srt, opt.udp_addr, opt.tcp_addr
         );
         opt.udp_to_tcp().await?;
     }
