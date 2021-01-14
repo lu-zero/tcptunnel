@@ -108,14 +108,19 @@ impl Opt {
         Ok(udp_stream.map(|v| v.map(|(msg, _addr)| msg.freeze())))
     }
 
-    async fn srt_input(&self) -> Result<impl Stream<Item = Result<Bytes, std::io::Error>>> {
-        let mut srt = srt_rs::async_builder();
+    fn srt_socket(&self) -> srt_rs::SrtAsyncBuilder {
+        let mut srt = srt_rs::async_builder().set_file_transmission_type();
 
         if let Some(udp_buffer) = self.udp_buffer {
             srt = srt
                 .set_udp_receive_buffer(udp_buffer as i32)
                 .set_udp_send_buffer(udp_buffer as i32);
         }
+        srt
+    }
+
+    async fn srt_input(&self) -> Result<impl Stream<Item = Result<Bytes, std::io::Error>>> {
+        let srt = self.srt_socket();
 
         let (peer, _) = srt.listen(self.udp_addr, 1i32).unwrap().accept().await?;
         Ok(ReaderStream::new(peer.compat()))
@@ -199,13 +204,7 @@ impl Opt {
     where
         T: AsyncRead,
     {
-        let mut srt = srt_rs::async_builder();
-
-        if let Some(udp_buffer) = self.udp_buffer {
-            srt = srt
-                .set_udp_receive_buffer(udp_buffer as i32)
-                .set_udp_send_buffer(udp_buffer as i32);
-        }
+        let srt = self.srt_socket();
 
         let srt_out = srt.connect(self.udp_addr)?.await?.compat_write();
 
