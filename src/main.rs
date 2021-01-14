@@ -116,6 +116,14 @@ impl Opt {
                 .set_udp_receive_buffer(udp_buffer as i32)
                 .set_udp_send_buffer(udp_buffer as i32);
         }
+
+        if let Some(latency) = self.srt_receive_latency {
+            srt = srt.set_receive_latency(latency);
+        }
+        if let Some(latency) = self.srt_peer_latency {
+            srt = srt.set_peer_latency(latency);
+        }
+
         srt
     }
 
@@ -319,6 +327,12 @@ struct Opt {
     #[structopt(long = "srt")]
     /// Use SRT instead of bare udp
     srt_udp: bool,
+    #[structopt(long)]
+    /// Set the receive latency in msec
+    srt_receive_latency: Option<i32>,
+    /// Set the peer latency in msec
+    #[structopt(long)]
+    srt_peer_latency: Option<i32>,
 }
 
 #[tokio::main]
