@@ -129,7 +129,9 @@ impl Opt {
     }
 
     async fn tcp_to_udp(&self) -> Result<()> {
-        let tcp = TcpStream::connect(&self.tcp_addr).await?;
+        let tcp = TcpStream::connect(&self.tcp_addr)
+            .await
+            .context("Connecting to TCP")?;
         let udp_addr = self.udp_addr.clone();
 
         let localaddr = SocketAddr::new(
