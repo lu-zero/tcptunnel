@@ -133,10 +133,14 @@ impl Opt {
         let udp_addr = self.udp_addr.clone();
 
         let localaddr = SocketAddr::new(
-            if udp_addr.is_ipv4() {
-                Ipv4Addr::UNSPECIFIED.into()
+            if let Some(addr) = self.udp_mcast_interface_address {
+                addr.into()
             } else {
-                Ipv6Addr::UNSPECIFIED.into()
+                if udp_addr.is_ipv4() {
+                    Ipv4Addr::UNSPECIFIED.into()
+                } else {
+                    Ipv6Addr::UNSPECIFIED.into()
+                }
             },
             0,
         );
