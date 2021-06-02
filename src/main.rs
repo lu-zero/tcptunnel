@@ -111,8 +111,9 @@ impl Opt {
             let elapsed = now.elapsed();
             if elapsed > Duration::from_secs(1) {
                 eprint!(
-                    "bps {:}\r",
-                    (size as f32 / elapsed.as_millis() as f32) * 8000f32
+                    "bps {:} last packet size {}\r",
+                    (size as f32 / elapsed.as_millis() as f32) * 8000f32,
+                    msg.len()
                 );
                 now = Instant::now();
                 size = 0;
