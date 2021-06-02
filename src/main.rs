@@ -12,7 +12,7 @@ struct ChunkDecoder {
     size: usize,
 }
 
-const PACKET_SIZE: usize = 1316;
+// const PACKET_SIZE: usize = 1316;
 
 impl ChunkDecoder {
     pub fn new(size: usize) -> Self {
@@ -148,7 +148,7 @@ impl Opt {
         );
         let udp = self.setup_udp(localaddr)?;
 
-        let tcp_stream = FramedRead::new(tcp, ChunkDecoder::new(PACKET_SIZE));
+        let tcp_stream = FramedRead::new(tcp, ChunkDecoder::new(self.packet_size));
         let (udp_sink, _udp_stream) = UdpFramed::new(udp, BytesCodec::new()).split();
         let mut now = Instant::now();
         let mut size = 0;
@@ -244,6 +244,9 @@ struct Opt {
     /// UDP OS send/receive buffer in bytes
     #[structopt(long = "udp_buffer")]
     udp_buffer: Option<usize>,
+    /// UDP packet size
+    #[structopt(short, default_value = "1316")]
+    packet_size: usize,
 }
 
 #[tokio::main]
