@@ -1,8 +1,9 @@
+use std::convert::TryInto;
 use std::io;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use bytes::BytesMut;
+use bytes::{Buf, BufMut, BytesMut};
 use futures::stream::{StreamExt, TryStreamExt};
 use tokio::net::*;
 use tokio_util::codec::{BytesCodec, Decoder, FramedRead, FramedWrite};
@@ -12,11 +13,9 @@ struct ChunkDecoder {
     size: usize,
 }
 
-// const PACKET_SIZE: usize = 1316;
-
 impl ChunkDecoder {
-    pub fn new(size: usize) -> Self {
-        ChunkDecoder { size }
+    pub fn new() -> Self {
+        ChunkDecoder { size: 0 }
     }
 }
 
@@ -25,10 +24,18 @@ impl Decoder for ChunkDecoder {
     type Error = std::io::Error;
 
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<BytesMut>, io::Error> {
-        // println!("Decoding {}", buf.len());
+        if self.size == 0 {
+            if buf.len() >= 4 {
+                let len = buf.get_u32();
+                self.size = len as usize;
+            } else {
+                return Ok(None);
+            }
+        }
         if buf.len() >= self.size {
             let out = buf.split_to(self.size);
             buf.reserve(self.size);
+            self.size = 0;
             Ok(Some(out))
         } else {
             Ok(None)
@@ -120,8 +127,11 @@ impl Opt {
             } else {
                 size += msg.len();
             }
+            let mut buf = BytesMut::with_capacity(msg.len() + 4);
+            buf.put_u32(msg.len().try_into().unwrap());
+            buf.extend_from_slice(msg.as_ref());
             // println!("recv: {} from {:?}", String::from_utf8_lossy(&msg), addr);
-            msg.freeze()
+            buf.freeze()
         });
 
         read.forward(tcp_sink).await?;
@@ -149,7 +159,7 @@ impl Opt {
         );
         let udp = self.setup_udp(localaddr)?;
 
-        let tcp_stream = FramedRead::new(tcp, ChunkDecoder::new(self.packet_size));
+        let tcp_stream = FramedRead::new(tcp, ChunkDecoder::new());
         let (udp_sink, _udp_stream) = UdpFramed::new(udp, BytesCodec::new()).split();
         let mut now = Instant::now();
         let mut size = 0;
@@ -245,9 +255,6 @@ struct Opt {
     /// UDP OS send/receive buffer in bytes
     #[structopt(long = "udp_buffer")]
     udp_buffer: Option<usize>,
-    /// UDP packet size
-    #[structopt(short, default_value = "1316")]
-    packet_size: usize,
 }
 
 #[tokio::main]
