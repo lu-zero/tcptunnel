@@ -13,3 +13,4 @@ futures = "0.3"
 structopt = "0.3"
 anyhow = "1.0"
 socket2 = { version = "0.3.17", features = ["reuseport"] }
+url = "2.2"
