@@ -1,7 +1,10 @@
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use anyhow::{bail, Context, Result};
 use tokio::net::*;
+use tokio_util::codec::BytesCodec;
+use tokio_util::udp::UdpFramed;
 
 impl EndPoint {
     pub fn setup_udp(&self, localaddr: SocketAddr) -> Result<UdpSocket> {
@@ -64,11 +67,27 @@ impl EndPoint {
 
         Ok(udp)
     }
+
+    pub fn make_output(&self) -> anyhow::Result<UdpFramed<BytesCodec>> {
+        let localaddr = SocketAddr::new(
+            if let Some(addr) = self.multicast_interface_address {
+                addr.into()
+            } else {
+                if self.addr.is_ipv4() {
+                    Ipv4Addr::UNSPECIFIED.into()
+                } else {
+                    Ipv6Addr::UNSPECIFIED.into()
+                }
+            },
+            0,
+        );
+        let udp = self.setup_udp(localaddr)?;
+
+        Ok(UdpFramed::new(udp, BytesCodec::new()))
+    }
 }
 
 use url::Url;
-
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 pub fn to_endpoint(s: &str) -> Result<EndPoint> {
     let u = Url::parse(s)?;
