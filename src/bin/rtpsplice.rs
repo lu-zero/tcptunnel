@@ -7,6 +7,7 @@ use bytes::Bytes;
 use futures::future;
 use futures::{SinkExt, StreamExt, TryStreamExt};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use rtp::header::Header;
 // use rtp::header::Header;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
@@ -17,6 +18,7 @@ use tokio_util::udp::UdpFramed;
 use tcptunnel::{to_endpoint, EndPoint};
 
 use structopt::StructOpt;
+use webrtc_util::Unmarshal;
 
 /// Splice a udp/rtp input to a multiple outputs
 #[derive(Debug, StructOpt)]
@@ -37,9 +39,9 @@ struct Opt {
     /// buffer=<usize>
     #[structopt(long, short, parse(try_from_str = to_endpoint))]
     output: Vec<EndPoint>,
-    /// Verbose logging
-    #[structopt(long, short)]
-    verbose: bool,
+    //    /// Verbose logging
+    //    #[structopt(long, short)]
+    //    verbose: bool,
 }
 
 impl Opt {
@@ -66,10 +68,15 @@ impl Opt {
                 let read = udp_stream
                     .map_err(anyhow::Error::new)
                     .map_ok(move |(msg, _addr)| {
+                        pb.inc(1);
+                        pb.set_message(format!(
+                            "Input {:?} packet {:?}",
+                            addr,
+                            Header::unmarshal(&mut msg.clone()).unwrap(),
+                        ));
                         let elapsed = now.elapsed();
                         if elapsed > Duration::from_secs(1) {
-                            pb.inc(size as u64);
-                            pb.println(format!(
+                            pb.set_message(format!(
                                 "Input {:?} bps {:} last packet size {}\r",
                                 addr,
                                 (size as f32 / elapsed.as_millis() as f32) * 8000f32,
@@ -122,10 +129,15 @@ async fn main() -> Result<()> {
         let read = stream
             .map_err(anyhow::Error::new)
             .map_ok(move |msg: Bytes| {
+                pb.inc(1);
+                pb.set_message(format!(
+                    "Output {:?} packet {:?}",
+                    udp_addr,
+                    Header::unmarshal(&mut msg.clone()).unwrap(),
+                ));
                 let elapsed = now.elapsed();
                 if elapsed > Duration::from_secs(1) {
-                    pb.inc(size as u64);
-                    pb.println(format!(
+                    pb.set_message(format!(
                         "Output {:?} bps {:} last packet size {}\r",
                         udp_addr,
                         (size as f32 / elapsed.as_millis() as f32) * 8000f32,
