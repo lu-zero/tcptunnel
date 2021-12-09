@@ -1,11 +1,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use bytes::Bytes;
-use futures::future;
-use futures::{SinkExt, StreamExt, TryStreamExt};
+use futures::{SinkExt, StreamExt, TryFutureExt, TryStreamExt};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rtp::header::Header;
 // use rtp::header::Header;
@@ -45,10 +44,7 @@ struct Opt {
 }
 
 impl Opt {
-    fn input_endpoints(
-        &self,
-        m: &MultiProgress,
-    ) -> anyhow::Result<Vec<mpsc::UnboundedReceiver<Bytes>>> {
+    fn input_endpoints(&self, m: &MultiProgress) -> anyhow::Result<Vec<mpsc::Receiver<Bytes>>> {
         let mut inputs = Vec::with_capacity(self.input.len());
 
         for e in &self.input {
@@ -56,7 +52,7 @@ impl Opt {
             let udp = e.setup_udp(e.addr)?;
 
             let (_sink, udp_stream) = UdpFramed::new(udp, BytesCodec::new()).split();
-            let (send, recv) = mpsc::unbounded_channel();
+            let (send, recv) = mpsc::channel(10);
 
             let mut now = Instant::now();
             let mut size: usize = 0;
@@ -89,7 +85,7 @@ impl Opt {
                         }
                         msg.freeze()
                     })
-                    .try_for_each(|msg| future::ready(send.send(msg).context("Cannot send")));
+                    .try_for_each(|msg| send.send(msg).map_err(anyhow::Error::new));
 
                 read.await
             });
