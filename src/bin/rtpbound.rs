@@ -53,7 +53,7 @@ impl Opt {
             let udp = e.setup_udp(e.addr)?;
 
             let (_sink, udp_stream) = UdpFramed::new(udp, BytesCodec::new()).split();
-            let (send, recv) = mpsc::channel(10);
+            let (send, recv) = mpsc::channel(1);
 
             let mut now = Instant::now();
             let mut size: usize = 0;
@@ -116,7 +116,7 @@ async fn main() -> Result<()> {
 
     let mut inputs = opt.input_endpoints(&m)?;
 
-    let (tx, _) = broadcast::channel(1000);
+    let (tx, _) = broadcast::channel(10);
 
     for e in opt.output {
         let mut now = Instant::now();
@@ -160,12 +160,15 @@ async fn main() -> Result<()> {
         tokio::spawn(async move { read.forward(sink).await });
     }
 
+    // wait until
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
     tokio::spawn(async move {
         let limit = 100;
         let mut queue = DoublePriorityQueue::with_capacity(limit);
         'out: loop {
             for input in inputs.iter_mut() {
-                if let Ok(out) = timeout(Duration::from_millis(200), input.recv()).await {
+                if let Ok(out) = timeout(Duration::from_millis(100), input.recv()).await {
                     if let Some(msg) = out {
                         let mut pkt = msg.clone();
                         if let Ok(header) = Header::unmarshal(&mut pkt) {
@@ -211,6 +214,8 @@ async fn main() -> Result<()> {
                     } else {
                         break 'out;
                     }
+                } else {
+                    eprintln!("{:p} timed out", input);
                 }
             }
 

@@ -52,7 +52,7 @@ impl Opt {
             let udp = e.setup_udp(e.addr)?;
 
             let (_sink, udp_stream) = UdpFramed::new(udp, BytesCodec::new()).split();
-            let (send, recv) = mpsc::channel(10);
+            let (send, recv) = mpsc::channel(1);
 
             let mut now = Instant::now();
             let mut size: usize = 0;
