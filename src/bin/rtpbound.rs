@@ -8,6 +8,7 @@ use bytes::Bytes;
 use futures::{SinkExt, StreamExt, TryFutureExt, TryStreamExt};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rtp::header::Header;
+use tokio::runtime::Runtime;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -46,7 +47,12 @@ struct Opt {
 }
 
 impl Opt {
-    fn input_endpoints(&self, m: &MultiProgress) -> anyhow::Result<Vec<mpsc::Receiver<Bytes>>> {
+    fn input_endpoints(
+        &self,
+        m: &MultiProgress,
+        rt: &Runtime,
+    ) -> anyhow::Result<Vec<mpsc::Receiver<Bytes>>> {
+        let _guard = rt.enter();
         let (senders, receivers): (Vec<mpsc::Sender<Bytes>>, Vec<mpsc::Receiver<Bytes>>) =
             self.input.iter().map(|_| mpsc::channel(1)).unzip();
 
@@ -119,9 +125,15 @@ async fn main() -> Result<()> {
 
     let m = Arc::new(MultiProgress::new());
 
-    let mut inputs = opt.input_endpoints(&m)?;
+    let in_rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(4)
+        .build()
+        .unwrap();
 
-    let (tx, _) = broadcast::channel(1000);
+    let mut inputs = opt.input_endpoints(&m, &in_rt)?;
+
+    let (tx, _rx) = broadcast::channel(1000);
 
     for e in opt.output {
         let mut now = Instant::now();
@@ -204,12 +216,9 @@ async fn main() -> Result<()> {
         }
     });
 
-    tokio::spawn(async move {
-        m.join_and_clear().unwrap();
-    })
-    .await?;
+    m.join_and_clear().unwrap();
 
-    //    tokio::signal::ctrl_c().await?;
+    tokio::signal::ctrl_c().await?;
 
     Ok(())
 }
