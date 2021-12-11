@@ -14,6 +14,7 @@ use tokio::time::timeout;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::codec::BytesCodec;
 use tokio_util::udp::UdpFramed;
+use tracing::Instrument;
 use webrtc_util::Unmarshal;
 
 use tcptunnel::{to_endpoint, EndPoint};
@@ -63,8 +64,12 @@ impl Opt {
 
             tokio::spawn(async move {
                 let read = udp_stream
-                    .map_err(anyhow::Error::new)
+                    .map_err(|e| {
+                        tracing::error!("Error {}", e);
+                        anyhow::Error::new(e)
+                    })
                     .map_ok(move |(msg, _addr)| {
+                        tracing::info!("got from {:?}", addr);
                         let elapsed = now.elapsed();
                         if elapsed > Duration::from_secs(1) {
                             pb.inc(size as u64);
@@ -83,7 +88,7 @@ impl Opt {
                     })
                     .try_for_each(|msg| send.send(msg).map_err(anyhow::Error::new));
 
-                read.await
+                read.instrument(tracing::info_span!("UDP Reader")).await
             });
         }
 
@@ -104,6 +109,8 @@ impl Hash for HeaderAndData {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
+
     let opt = Opt::from_args();
 
     if opt.output.len() != 1 {
@@ -128,7 +135,10 @@ async fn main() -> Result<()> {
         let (sink, _stream) = e.make_output()?.split();
         let sink = sink.sink_map_err(anyhow::Error::new);
         let read = stream
-            .map_err(anyhow::Error::new)
+            .map_err(|e| {
+                tracing::error!("Error {}", e);
+                anyhow::Error::new(e)
+            })
             .map_ok(move |msg: Bytes| {
                 pb.inc(1);
                 let mut pkt = msg.clone();
@@ -155,7 +165,11 @@ async fn main() -> Result<()> {
                 (msg, udp_addr)
             });
 
-        tokio::spawn(async move { read.forward(sink).await });
+        tokio::spawn(async move {
+            read.forward(sink)
+                .instrument(tracing::info_span!("UDP Writer"))
+                .await
+        });
     }
 
     // wait until
@@ -185,8 +199,6 @@ async fn main() -> Result<()> {
                     } else {
                         break 'out;
                     }
-                } else {
-                    eprintln!("{:p} timed out", input);
                 }
             }
         }
