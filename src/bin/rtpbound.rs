@@ -1,14 +1,13 @@
 use std::collections::VecDeque;
-use std::sync::Arc;
+// use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
 use bytes::Bytes;
 use futures::{stream, SinkExt, StreamExt, TryFutureExt, TryStreamExt};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+// use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rtp::header::Header;
-use tokio::runtime::Runtime;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
@@ -48,10 +47,8 @@ struct Opt {
 impl Opt {
     fn input_endpoints(
         &self,
-        m: &MultiProgress,
-        rt: &Runtime,
+        // m: &MultiProgress,
     ) -> anyhow::Result<Vec<ReceiverStream<Bytes>>> {
-        let _guard = rt.enter();
         let (senders, receivers): (Vec<mpsc::Sender<Bytes>>, Vec<ReceiverStream<Bytes>>) = self
             .input
             .iter()
@@ -70,8 +67,8 @@ impl Opt {
             let mut now = Instant::now();
             let mut size: usize = 0;
 
-            let pb = m.add(ProgressBar::new(!0).with_style(ProgressStyle::default_spinner()));
-            pb.println(format!("Input {:?}", e));
+            // let pb = m.add(ProgressBar::new(!0).with_style(ProgressStyle::default_spinner()));
+            // pb.println(format!("Input {:?}", e));
 
             tokio::spawn(async move {
                 let read = udp_stream
@@ -83,13 +80,15 @@ impl Opt {
                         tracing::info!("got from {:?}", addr);
                         let elapsed = now.elapsed();
                         if elapsed > Duration::from_secs(1) {
-                            pb.inc(size as u64);
-                            pb.set_message(format!(
-                                "Input {:?} bps {:} last packet size {}\r",
+                            // pb.inc(size as u64);
+                            // pb.set_message(format!(
+                            eprintln!(
+                                "Input {:?} bps {:} last packet size {}",
                                 addr,
                                 (size as f32 / elapsed.as_millis() as f32) * 8000f32,
                                 msg.len()
-                            ));
+                            );
+                            //));
                             now = Instant::now();
                             size = 0;
                         } else {
@@ -113,15 +112,9 @@ async fn main() -> Result<()> {
 
     let opt = Opt::from_args();
 
-    let m = Arc::new(MultiProgress::new());
+    //    let m = Arc::new(MultiProgress::new());
 
-    let in_rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(4)
-        .build()
-        .unwrap();
-
-    let mut inputs = opt.input_endpoints(&m, &in_rt)?;
+    let mut inputs = opt.input_endpoints(/* &m */)?;
 
     let (tx, _rx) = broadcast::channel(1000);
 
@@ -129,8 +122,8 @@ async fn main() -> Result<()> {
         let mut now = Instant::now();
         let mut size: usize = 0;
         let udp_addr = e.addr;
-        let pb = m.add(ProgressBar::new(!0).with_style(ProgressStyle::default_spinner()));
-        pb.println(format!("Output {:?}", e));
+        // let pb = m.add(ProgressBar::new(!0).with_style(ProgressStyle::default_spinner()));
+        // pb.println(format!("Output {:?}", e));
 
         let rx = tx.subscribe();
         let stream = BroadcastStream::new(rx);
@@ -142,23 +135,25 @@ async fn main() -> Result<()> {
                 anyhow::Error::new(e)
             })
             .map_ok(move |msg: Bytes| {
-                pb.inc(1);
-                let mut pkt = msg.clone();
-                if let Ok(header) = Header::unmarshal(&mut pkt) {
-                    pb.set_message(format!(
-                        "Out seq {} ts {}",
-                        header.sequence_number, header.timestamp
-                    ));
-                    // eprintln!("OUT seq {} ts {}", header.sequence_number, header.timestamp);
-                }
+                // pb.inc(1);
+                // let mut pkt = msg.clone();
+                // if let Ok(header) = Header::unmarshal(&mut pkt) {
+                // pb.set_message(format!(
+                //    "Out seq {} ts {}",
+                //    header.sequence_number, header.timestamp
+                // ));
+                // eprintln!("OUT seq {} ts {}", header.sequence_number, header.timestamp);
+                // }
                 let elapsed = now.elapsed();
                 if elapsed > Duration::from_secs(1) {
-                    pb.set_message(format!(
-                        "Output {:?} bps {:} last packet size {}\r",
+                    //pb.set_message(format!(
+                    eprintln!(
+                        "Output {:?} bps {:} last packet size {}",
                         udp_addr,
                         (size as f32 / elapsed.as_millis() as f32) * 8000f32,
                         msg.len()
-                    ));
+                    );
+                    //));
                     now = Instant::now();
                     size = 0;
                 } else {
@@ -196,7 +191,7 @@ async fn main() -> Result<()> {
             .await;
     });
 
-    m.join_and_clear().unwrap();
+    // m.join_and_clear().unwrap();
 
     tokio::signal::ctrl_c().await?;
 
