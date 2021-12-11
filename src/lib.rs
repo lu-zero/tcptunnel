@@ -17,6 +17,7 @@ impl EndPoint {
         let udp = match udp_ip {
             IpAddr::V4(ref addr) => {
                 let udp = Socket::new(Domain::ipv4(), Type::dgram(), Some(Protocol::udp()))?;
+                udp.set_nonblocking(true)?;
                 udp.set_reuse_address(true)?;
                 udp.set_reuse_port(true)?;
                 if let Some(udp_buffer) = self.buffer {
@@ -40,6 +41,7 @@ impl EndPoint {
             }
             IpAddr::V6(ref addr) => {
                 let udp = Socket::new(Domain::ipv6(), Type::dgram(), Some(Protocol::udp()))?;
+                udp.set_nonblocking(true)?;
                 udp.set_reuse_address(true)?;
                 udp.set_reuse_port(true)?;
                 if let Some(udp_buffer) = self.buffer {
