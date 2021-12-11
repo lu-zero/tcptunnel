@@ -192,7 +192,7 @@ async fn main() -> Result<()> {
         let mut seen = VecDeque::with_capacity(limit);
         'out: loop {
             for input in inputs.iter_mut() {
-                if let Ok(out) = timeout(Duration::from_millis(10), input.recv()).await {
+                if let Ok(out) = timeout(Duration::from_millis(1), input.recv()).await {
                     if let Some(msg) = out {
                         let mut pkt = msg.clone();
                         if let Ok(header) = Header::unmarshal(&mut pkt) {
