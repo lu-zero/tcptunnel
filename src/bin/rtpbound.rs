@@ -107,26 +107,11 @@ impl Opt {
     }
 }
 
-#[derive(PartialEq, Eq)]
-struct HeaderAndData(Header, Bytes);
-
-use std::hash::{Hash, Hasher};
-
-impl Hash for HeaderAndData {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.1.hash(state);
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let opt = Opt::from_args();
-
-    if opt.output.len() != 1 {
-        anyhow::bail!("Only 1 output supported for now");
-    }
 
     let m = Arc::new(MultiProgress::new());
 
@@ -188,9 +173,6 @@ async fn main() -> Result<()> {
                 .await
         });
     }
-
-    // wait until
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
     tokio::spawn(async move {
         let limit = 100;
