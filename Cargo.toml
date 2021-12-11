@@ -18,5 +18,4 @@ url = "2.2"
 rtp = "0.6"
 webrtc-util = "0.5"
 indicatif = "0.16"
-priority-queue = "1.2.1"
 

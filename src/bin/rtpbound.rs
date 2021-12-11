@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -6,7 +7,6 @@ use anyhow::Result;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt, TryFutureExt, TryStreamExt};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use priority_queue::DoublePriorityQueue;
 use rtp::header::Header;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
@@ -46,14 +46,14 @@ struct Opt {
 
 impl Opt {
     fn input_endpoints(&self, m: &MultiProgress) -> anyhow::Result<Vec<mpsc::Receiver<Bytes>>> {
-        let mut inputs = Vec::with_capacity(self.input.len());
+        let (senders, receivers): (Vec<mpsc::Sender<Bytes>>, Vec<mpsc::Receiver<Bytes>>) =
+            self.input.iter().map(|_| mpsc::channel(1)).unzip();
 
-        for e in &self.input {
+        for (e, send) in self.input.iter().zip(senders) {
             let addr = e.addr;
             let udp = e.setup_udp(e.addr)?;
 
             let (_sink, udp_stream) = UdpFramed::new(udp, BytesCodec::new()).split();
-            let (send, recv) = mpsc::channel(1);
 
             let mut now = Instant::now();
             let mut size: usize = 0;
@@ -85,11 +85,9 @@ impl Opt {
 
                 read.await
             });
-
-            inputs.push(recv);
         }
 
-        Ok(inputs)
+        Ok(receivers)
     }
 }
 
@@ -116,7 +114,7 @@ async fn main() -> Result<()> {
 
     let mut inputs = opt.input_endpoints(&m)?;
 
-    let (tx, _) = broadcast::channel(10);
+    let (tx, _) = broadcast::channel(1000);
 
     for e in opt.output {
         let mut now = Instant::now();
@@ -165,48 +163,21 @@ async fn main() -> Result<()> {
 
     tokio::spawn(async move {
         let limit = 100;
-        let mut queue = DoublePriorityQueue::with_capacity(limit);
+        let mut seen = VecDeque::with_capacity(limit);
         'out: loop {
             for input in inputs.iter_mut() {
                 if let Ok(out) = timeout(Duration::from_millis(10), input.recv()).await {
                     if let Some(msg) = out {
                         let mut pkt = msg.clone();
                         if let Ok(header) = Header::unmarshal(&mut pkt) {
-                            /*  eprintln!(
-                                "{:p}: Inserting seq {} ts {} in queue len {}",
-                                input,
-                                header.sequence_number,
-                                header.timestamp,
-                                queue.len()
-                            ); */
-                            if let Some((prev_header_and_data, _timestamp)) = queue.peek_min() {
-                                let HeaderAndData(prev_header, _) = prev_header_and_data;
-                                // wrap around in the timestamps, drain the queue before inserting
-                                if header.sequence_number < prev_header.sequence_number
-                                    && header.timestamp >= prev_header.timestamp
-                                {
-                                    eprintln!(
-                                        "Wrap around! {} {} {}",
-                                        header.timestamp,
-                                        prev_header.timestamp,
-                                        queue.len()
-                                    );
-
-                                    for (HeaderAndData(header, msg), _ts) in
-                                        queue.into_sorted_iter()
-                                    {
-                                        eprintln!(
-                                            " Pushing from wrap around out seq {} ts {}",
-                                            header.sequence_number, header.timestamp,
-                                        );
-                                        tx.send(msg).unwrap();
-                                    }
-
-                                    queue = DoublePriorityQueue::with_capacity(limit);
+                            let key = (header.sequence_number, header.timestamp);
+                            if !seen.contains(&key) {
+                                tx.send(msg).unwrap();
+                                if seen.len() == limit {
+                                    let _ = seen.pop_front();
                                 }
+                                seen.push_back(key);
                             }
-                            let seq = header.sequence_number;
-                            let _ = queue.push(HeaderAndData(header, msg), seq);
                         } else {
                             // todo fail clearly
                             break 'out;
@@ -215,19 +186,9 @@ async fn main() -> Result<()> {
                         break 'out;
                     }
                 } else {
-                    // eprintln!("{:p} timed out", input);
+                    eprintln!("{:p} timed out", input);
                 }
             }
-
-            if queue.len() > limit / 2 {
-                if let Some((HeaderAndData(_header, msg), _ts)) = queue.pop_max() {
-                    tx.send(msg).unwrap();
-                }
-            }
-        }
-
-        for (HeaderAndData(_header, msg), _ts) in queue.into_sorted_iter().rev() {
-            tx.send(msg).unwrap();
         }
     });
 
