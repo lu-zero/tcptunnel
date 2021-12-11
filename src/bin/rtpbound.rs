@@ -5,14 +5,13 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 
 use bytes::Bytes;
-use futures::{SinkExt, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{stream, SinkExt, StreamExt, TryFutureExt, TryStreamExt};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rtp::header::Header;
 use tokio::runtime::Runtime;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
-use tokio::time::timeout;
-use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 use tokio_util::codec::BytesCodec;
 use tokio_util::udp::UdpFramed;
 use tracing::Instrument;
@@ -51,10 +50,16 @@ impl Opt {
         &self,
         m: &MultiProgress,
         rt: &Runtime,
-    ) -> anyhow::Result<Vec<mpsc::Receiver<Bytes>>> {
+    ) -> anyhow::Result<Vec<ReceiverStream<Bytes>>> {
         let _guard = rt.enter();
-        let (senders, receivers): (Vec<mpsc::Sender<Bytes>>, Vec<mpsc::Receiver<Bytes>>) =
-            self.input.iter().map(|_| mpsc::channel(1)).unzip();
+        let (senders, receivers): (Vec<mpsc::Sender<Bytes>>, Vec<ReceiverStream<Bytes>>) = self
+            .input
+            .iter()
+            .map(|_| {
+                let (sender, receiver) = mpsc::channel(1);
+                (sender, ReceiverStream::new(receiver))
+            })
+            .unzip();
 
         for (e, send) in self.input.iter().zip(senders) {
             let addr = e.addr;
@@ -190,30 +195,23 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         let limit = 100;
         let mut seen = VecDeque::with_capacity(limit);
-        'out: loop {
-            for input in inputs.iter_mut() {
-                if let Ok(out) = timeout(Duration::from_millis(1), input.recv()).await {
-                    if let Some(msg) = out {
-                        let mut pkt = msg.clone();
-                        if let Ok(header) = Header::unmarshal(&mut pkt) {
-                            let key = (header.sequence_number, header.timestamp);
-                            if !seen.contains(&key) {
-                                tx.send(msg).unwrap();
-                                if seen.len() == limit {
-                                    let _ = seen.pop_front();
-                                }
-                                seen.push_back(key);
-                            }
-                        } else {
-                            // todo fail clearly
-                            break 'out;
+        stream::select_all(inputs.iter_mut())
+            .for_each(|msg| {
+                let mut pkt = msg.clone();
+                if let Ok(header) = Header::unmarshal(&mut pkt) {
+                    let key = (header.sequence_number, header.timestamp);
+                    if !seen.contains(&key) {
+                        tx.send(msg).unwrap();
+                        if seen.len() == limit {
+                            let _ = seen.pop_front();
                         }
-                    } else {
-                        break 'out;
+                        seen.push_back(key);
                     }
                 }
-            }
-        }
+
+                futures::future::ready(())
+            })
+            .await;
     });
 
     m.join_and_clear().unwrap();
