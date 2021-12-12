@@ -42,6 +42,8 @@ struct Opt {
     //    /// Verbose logging
     //    #[structopt(long, short)]
     //    verbose: bool,
+    #[structopt(long, short, default_value = "100")]
+    lookbehind: usize,
 }
 
 impl Opt {
@@ -169,9 +171,10 @@ async fn main() -> Result<()> {
         });
     }
 
+    let lookbehind = opt.lookbehind;
+
     tokio::spawn(async move {
-        let limit = 100;
-        let mut seen = VecDeque::with_capacity(limit);
+        let mut seen = VecDeque::with_capacity(lookbehind);
         stream::select_all(inputs.iter_mut())
             .for_each(|msg| {
                 let mut pkt = msg.clone();
@@ -179,7 +182,7 @@ async fn main() -> Result<()> {
                     let key = (header.sequence_number, header.timestamp);
                     if !seen.contains(&key) {
                         tx.send(msg).unwrap();
-                        if seen.len() == limit {
+                        if seen.len() == lookbehind {
                             let _ = seen.pop_front();
                         }
                         seen.push_back(key);
