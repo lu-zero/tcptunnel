@@ -7,6 +7,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use futures::{stream, SinkExt, StreamExt, TryFutureExt, TryStreamExt};
 // use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use clap::Parser;
 use rtp::header::Header;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
@@ -18,10 +19,8 @@ use webrtc_util::Unmarshal;
 
 use tcptunnel::{to_endpoint, EndPoint};
 
-use structopt::StructOpt;
-
 /// Bound multiple udp/rtp input to a single output
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 struct Opt {
     /// Input source url
     /// It supports the following query parameters
@@ -29,7 +28,7 @@ struct Opt {
     /// multicast_ttl=<u32> (IPv4-only)
     /// multicast_hops=<u32> (IPv6-only)
     /// buffer=<usize>
-    #[structopt(long, short,  parse(try_from_str = to_endpoint))]
+    #[clap(long, short,  parse(try_from_str = to_endpoint))]
     input: Vec<EndPoint>,
     /// Output source
     /// It supports the following query parameters
@@ -37,12 +36,12 @@ struct Opt {
     /// multicast_ttl=<u32> (IPv4-only)
     /// multicast_hops=<u32> (IPv6-only)
     /// buffer=<usize>
-    #[structopt(long, short, parse(try_from_str = to_endpoint))]
+    #[clap(long, short, parse(try_from_str = to_endpoint))]
     output: Vec<EndPoint>,
     //    /// Verbose logging
-    //    #[structopt(long, short)]
+    //    #[clap(long, short)]
     //    verbose: bool,
-    #[structopt(long, short, default_value = "100")]
+    #[clap(long, short, default_value = "100")]
     lookbehind: usize,
 }
 
@@ -112,7 +111,7 @@ impl Opt {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
-    let opt = Opt::from_args();
+    let opt = Opt::parse();
 
     //    let m = Arc::new(MultiProgress::new());
 

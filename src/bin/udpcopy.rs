@@ -7,11 +7,11 @@ use tokio_util::udp::UdpFramed;
 
 use tcptunnel::{to_endpoint, EndPoint};
 
-use structopt::StructOpt;
+use clap::Parser;
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 struct Opt {
     /// Input source url
     /// It supports the following query parameters
@@ -19,7 +19,7 @@ struct Opt {
     /// multicast_ttl=<u32> (IPv4-only)
     /// multicast_hops=<u32> (IPv6-only)
     /// buffer=<usize>
-    #[structopt(long, short,  parse(try_from_str = to_endpoint))]
+    #[clap(long, short,  parse(try_from_str = to_endpoint))]
     input: EndPoint,
     /// Output source
     /// It supports the following query parameters
@@ -27,10 +27,10 @@ struct Opt {
     /// multicast_ttl=<u32> (IPv4-only)
     /// multicast_hops=<u32> (IPv6-only)
     /// buffer=<usize>
-    #[structopt(long, short, parse(try_from_str = to_endpoint))]
+    #[clap(long, short, parse(try_from_str = to_endpoint))]
     output: EndPoint,
     /// Verbose logging
-    #[structopt(long, short)]
+    #[clap(long, short)]
     verbose: bool,
 }
 
@@ -68,7 +68,7 @@ impl Opt {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let opt = Opt::from_args();
+    let opt = Opt::parse();
 
     let (_sink, udp_stream) = opt.input_endpoint()?.split();
     let (udp_sink, _stream) = opt.output_endpoint()?.split();

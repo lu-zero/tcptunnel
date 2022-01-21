@@ -203,7 +203,7 @@ fn tcp_to_udp_listen(udp_addr: &SocketAddr, tcp_addr: &SocketAddr) {
 }
 */
 
-use structopt::StructOpt;
+use clap::Parser;
 
 use std::net::ToSocketAddrs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -216,43 +216,43 @@ fn to_socket_addr(s: &str) -> Result<SocketAddr> {
         .ok_or(anyhow::anyhow!("No address for name {}", s))
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 struct Opt {
     /// UDP multicast interface address (IPv4 only)
-    #[structopt(short = "a", long, name = "MCAST_INTERFACE_ADDR")]
+    #[clap(short = 'a', long, name = "MCAST_INTERFACE_ADDR")]
     udp_mcast_interface_address: Option<Ipv4Addr>,
     /// UDP multicast interface index (IPv6 only)
-    #[structopt(short = "i", long, name = "MCAST_INTERFACE_INDEX")]
+    #[clap(short = 'i', long, name = "MCAST_INTERFACE_INDEX")]
     udp_mcast_interface_index: Option<u32>,
     /// UDP address in `ip:port` format
-    #[structopt(short, long, name = "UDP_ADDR", parse(try_from_str = to_socket_addr))]
+    #[clap(short, long, name = "UDP_ADDR", parse(try_from_str = to_socket_addr))]
     udp_addr: SocketAddr,
     /// TCP address in `ip:port` format
-    #[structopt(short, long, name = "TCP_ADDR", parse(try_from_str = to_socket_addr))]
+    #[clap(short, long, name = "TCP_ADDR", parse(try_from_str = to_socket_addr))]
     tcp_addr: SocketAddr,
     // Set to listen on the tcp port
-    // #[structopt(short)]
+    // #[clap(short)]
     // listen_tcp: bool,
     /// Send UDP data over the tcp connection
-    #[structopt(short)]
+    #[clap(short)]
     send_tcp: bool,
     /// IPv4 Multicast TTL
-    #[structopt(short = "m", long = "ttl")]
+    #[clap(short = 'm', long = "ttl")]
     multicast_ttl: Option<u32>,
     /// IPv6 Multicast Hops
-    #[structopt(long = "hops")]
+    #[clap(long = "hops")]
     multicast_hops: Option<u32>,
     /// UDP OS send/receive buffer in bytes
-    #[structopt(long = "udp_buffer")]
+    #[clap(long = "udp_buffer")]
     udp_buffer: Option<usize>,
     /// UDP packet size
-    #[structopt(short, default_value = "1316")]
+    #[clap(short, default_value = "1316")]
     packet_size: usize,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let opt = Opt::from_args();
+    let opt = Opt::parse();
 
     if !opt.send_tcp {
         eprintln!(
