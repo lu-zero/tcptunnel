@@ -85,24 +85,30 @@ fn output_endpoint(e: &EndPoint) -> anyhow::Result<UdpFramed<BytesCodec>> {
 
 fn input_device(dev: &str) -> Result<Device> {
     let host = cpal::default_host();
-    if dev == "default" {
+    let dev = if dev == "default" {
         host.default_input_device()
     } else {
         host.input_devices()?
-            .find(|x| x.name().map(|y| y == dev).unwrap_or(false))
+            .find(|x| x.name().map(|y| y.starts_with(dev)).unwrap_or(false))
     }
-    .ok_or_else(|| anyhow!("Cannot find the specified input device"))
+    .ok_or_else(|| anyhow!("Cannot find the specified input device"))?;
+    info!("Input device {}", dev.name()?);
+
+    Ok(dev)
 }
 
 fn output_device(dev: &str) -> Result<Device> {
     let host = cpal::default_host();
-    if dev == "default" {
+    let dev = if dev == "default" {
         host.default_output_device()
     } else {
         host.output_devices()?
-            .find(|x| x.name().map(|y| y == dev).unwrap_or(false))
+            .find(|x| x.name().map(|y| y.starts_with(dev)).unwrap_or(false))
     }
-    .ok_or_else(|| anyhow!("Cannot find the specified input device"))
+    .ok_or_else(|| anyhow!("Cannot find the specified input device"))?;
+    info!("Output device {}", dev.name()?);
+
+    Ok(dev)
 }
 
 const MAX_PACKET: usize = 1500;
