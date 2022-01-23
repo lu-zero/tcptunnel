@@ -134,7 +134,7 @@ fn main() -> Result<()> {
     let samples = 960;
 
     // The channel to share samples between the codec and the audio device
-    let (audio_send, audio_recv) = flume::bounded(samples * 4);
+    let (audio_send, audio_recv) = flume::bounded(samples * 20);
     // The channel to share packets between the codec and the network
     let (net_send, net_recv) = flume::bounded::<Bytes>(4);
 
@@ -267,8 +267,6 @@ fn main() -> Result<()> {
                         }
                     }
                 }
-
-                std::thread::sleep(std::time::Duration::from_millis(10));
 
                 if fell_behind {
                     warn!("Input stream fell behind!!");
