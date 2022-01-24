@@ -131,7 +131,7 @@ fn main() -> Result<()> {
     let rt = Runtime::new().unwrap();
 
     // 20ms frames
-    let samples = 960;
+    let samples = opt.sample_rate as usize * 20 * opt.channels as usize / 1000;
 
     // The channel to share samples between the codec and the audio device
     let (audio_send, audio_recv) = flume::bounded(samples * 20);
