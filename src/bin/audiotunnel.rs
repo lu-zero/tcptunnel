@@ -4,7 +4,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use anyhow::{anyhow, bail, Result};
 use audiopus::{Channels, SampleRate, TryFrom};
 use bytes::Bytes;
-use clap::Parser;
+use clap::{ArgEnum, Parser};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Device;
 use flume::{Receiver, Sender};
@@ -16,6 +16,15 @@ use tokio_util::udp::UdpFramed;
 
 use tcptunnel::{to_endpoint, EndPoint};
 use tracing::{debug, info, warn};
+use tracing_subscriber::EnvFilter;
+
+#[derive(Debug, Clone, ArgEnum)]
+enum Codec {
+    /// Opus
+    Opus,
+    /// Linear PCM
+    PCM,
+}
 
 /// Capture from an audio device and stream to udp or
 /// listen to udp and output to an audio device
@@ -53,6 +62,10 @@ struct Opt {
     /// Verbose logging
     #[clap(long, short)]
     verbose: bool,
+
+    /// Select a codec
+    #[clap(long, default_value = "opus", arg_enum)]
+    codec: Codec,
 }
 
 fn input_endpoint(e: &EndPoint) -> anyhow::Result<UdpFramed<BytesCodec>> {
@@ -118,9 +131,21 @@ fn err_cb(err: cpal::StreamError) {
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
-
     let opt = Opt::parse();
+
+    let filter_layer = EnvFilter::try_from_default_env()
+        .or_else(|_| {
+            if opt.verbose {
+                EnvFilter::try_new("debug")
+            } else {
+                EnvFilter::try_new("warn")
+            }
+        })
+        .unwrap();
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter_layer)
+        .init();
 
     if (opt.input.is_some() && opt.output.is_some())
         || (opt.input.is_none() && opt.output.is_none())
