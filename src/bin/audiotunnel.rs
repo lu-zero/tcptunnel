@@ -15,7 +15,7 @@ use tokio_util::codec::BytesCodec;
 use tokio_util::udp::UdpFramed;
 
 use tcptunnel::{to_endpoint, EndPoint};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// Capture from an audio device and stream to udp or
 /// listen to udp and output to an audio device
@@ -141,6 +141,7 @@ fn main() -> Result<()> {
     if let Some(input) = opt.input {
         let output_cb = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
             let mut input_fell_behind = false;
+            debug!("Writing audio data in a {} buffer", data.len());
             for sample in data {
                 *sample = match audio_recv.try_recv().ok() {
                     Some(s) => s,
@@ -175,6 +176,7 @@ fn main() -> Result<()> {
             let mut fell_behind = false;
             for packet in net_recv.iter() {
                 let packet = packet.as_ref();
+                debug!("Received packet of {}", packet.len());
                 match dec.decode_float(Some(packet), &mut buf, false) {
                     Ok(size) => {
                         info!(
@@ -209,6 +211,7 @@ fn main() -> Result<()> {
                     anyhow::Error::new(e)
                 })
                 .try_for_each(move |(msg, _addr)| {
+                    debug!("Received from network {} data", msg.len());
                     send.send_async(msg.freeze())
                         .map_err(|e| anyhow::Error::new(e))
                 });
@@ -224,7 +227,7 @@ fn main() -> Result<()> {
     } else if let Some(output) = opt.output {
         let input_cb = move |data: &[f32], _: &cpal::InputCallbackInfo| {
             let mut fell_behind = false;
-
+            debug!("Sending audio buffer of {}", data.len());
             for &sample in data {
                 if audio_send.try_send(sample).is_err() {
                     fell_behind = true;
@@ -272,9 +275,10 @@ fn main() -> Result<()> {
                     warn!("Input stream fell behind!!");
                     fell_behind = false;
                 }
+                debug!("Copied samples {} left in the queue", audio_recv.len());
                 match enc.encode_float(&buf, &mut out) {
                     Ok(size) => {
-                        info!("Encoded {} capacity {}", size, audio_recv.len());
+                        info!("Encoded {} to {}", buf.len(), size);
                         let bytes = Bytes::copy_from_slice(&out[..size]);
                         if net_send.send(bytes).is_err() {
                             warn!("Cannot send to the channel");
