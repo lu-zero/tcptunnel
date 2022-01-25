@@ -130,6 +130,30 @@ fn output_device(dev: &str) -> Result<Device> {
 
 const MAX_PACKET: usize = 1400;
 
+trait Decoder: Send {
+    fn decode(&mut self, packet: &[u8], buf: &mut [f32]) -> anyhow::Result<usize>;
+}
+
+trait Encoder: Send {
+    fn encode(&mut self, buf: &[f32], packet: &mut [u8]) -> anyhow::Result<usize>;
+}
+
+impl Decoder for audiopus::coder::Decoder {
+    fn decode(&mut self, packet: &[u8], buf: &mut [f32]) -> anyhow::Result<usize> {
+        let size = self.decode_float(Some(packet), buf, false)?;
+
+        Ok(size)
+    }
+}
+
+impl Encoder for audiopus::coder::Encoder {
+    fn encode(&mut self, buf: &[f32], packet: &mut [u8]) -> anyhow::Result<usize> {
+        let size = self.encode_float(buf, packet)?;
+
+        Ok(size)
+    }
+}
+
 fn err_cb(err: cpal::StreamError) {
     warn!("Audio error {}", err);
 }
@@ -194,10 +218,14 @@ fn main() -> Result<()> {
 
         info!("Audio configuration {:?}", config);
 
-        let mut dec = audiopus::coder::Decoder::new(
-            SampleRate::try_from(config.sample_rate.0.try_into()?)?,
-            Channels::try_from(config.channels.try_into()?)?,
-        )?;
+        let mut dec = {
+            let dec = audiopus::coder::Decoder::new(
+                SampleRate::try_from(config.sample_rate.0.try_into()?)?,
+                Channels::try_from(config.channels.try_into()?)?,
+            )?;
+
+            Box::new(dec) as Box<dyn Decoder>
+        };
 
         let audio_stream = device.build_output_stream(&config, output_cb, err_cb)?;
 
@@ -207,7 +235,7 @@ fn main() -> Result<()> {
             for packet in net_recv.iter() {
                 let packet = packet.as_ref();
                 debug!("Received packet of {}", packet.len());
-                match dec.decode_float(Some(packet), &mut buf, false) {
+                match dec.decode(packet, &mut buf) {
                     Ok(size) => {
                         info!(
                             "Decoded {}/{} from {} capacity {}",
@@ -277,11 +305,14 @@ fn main() -> Result<()> {
 
         info!("Audio configuration {:?}", config);
 
-        let enc = audiopus::coder::Encoder::new(
-            SampleRate::try_from(config.sample_rate.0.try_into()?)?,
-            Channels::try_from(config.channels.try_into()?)?,
-            audiopus::Application::Audio,
-        )?;
+        let mut enc = {
+            let enc = audiopus::coder::Encoder::new(
+                SampleRate::try_from(config.sample_rate.0.try_into()?)?,
+                Channels::try_from(config.channels.try_into()?)?,
+                audiopus::Application::Audio,
+            )?;
+            Box::new(enc) as Box<dyn Encoder>
+        };
 
         let audio_stream = device.build_input_stream(&config, input_cb, err_cb)?;
 
@@ -307,7 +338,7 @@ fn main() -> Result<()> {
                     fell_behind = false;
                 }
                 debug!("Copied samples {} left in the queue", audio_recv.len());
-                match enc.encode_float(&buf, &mut out) {
+                match enc.encode(&buf, &mut out) {
                     Ok(size) => {
                         info!("Encoded {} to {}", buf.len(), size);
                         let bytes = Bytes::copy_from_slice(&out[..size]);
