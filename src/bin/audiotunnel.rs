@@ -23,7 +23,7 @@ enum Codec {
     /// Opus
     Opus,
     /// Linear PCM
-    PCM,
+    Pcm,
 }
 
 /// Capture from an audio device and stream to udp or
