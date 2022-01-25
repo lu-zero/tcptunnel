@@ -59,6 +59,10 @@ struct Opt {
     #[clap(long, short, default_value = "1")]
     channels: u16,
 
+    /// The size of the audio buffer in use in samples
+    #[clap(long, short)]
+    buffer: Option<u32>,
+
     /// Verbose logging
     #[clap(long, short)]
     verbose: bool,
@@ -186,6 +190,10 @@ fn main() -> Result<()> {
 
         config.sample_rate = cpal::SampleRate(opt.sample_rate);
         config.channels = opt.channels;
+        config.buffer_size = opt
+            .buffer
+            .map(|v| cpal::BufferSize::Fixed(v))
+            .unwrap_or(cpal::BufferSize::Default);
 
         info!("Audio configuration {:?}", config);
 
@@ -268,6 +276,10 @@ fn main() -> Result<()> {
 
         config.sample_rate = cpal::SampleRate(opt.sample_rate);
         config.channels = opt.channels;
+        config.buffer_size = opt
+            .buffer
+            .map(|v| cpal::BufferSize::Fixed(v))
+            .unwrap_or(cpal::BufferSize::Default);
 
         info!("Audio configuration {:?}", config);
 
