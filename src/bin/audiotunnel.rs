@@ -128,7 +128,7 @@ fn output_device(dev: &str) -> Result<Device> {
     Ok(dev)
 }
 
-const MAX_PACKET: usize = 1500;
+const MAX_PACKET: usize = 1400;
 
 fn err_cb(err: cpal::StreamError) {
     warn!("Audio error {}", err);
