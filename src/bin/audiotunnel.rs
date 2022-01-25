@@ -189,7 +189,7 @@ fn main() -> Result<()> {
             if opt.verbose {
                 EnvFilter::try_new("debug")
             } else {
-                EnvFilter::try_new("warn")
+                EnvFilter::try_new("info")
             }
         })
         .unwrap();
@@ -261,18 +261,22 @@ fn main() -> Result<()> {
         std::thread::spawn(move || {
             let mut buf = vec![0f32; samples];
             let mut fell_behind = false;
+            let mut print = 0;
             for packet in net_recv.iter() {
                 let packet = packet.as_ref();
                 debug!("Received packet of {}", packet.len());
                 match dec.decode(packet, &mut buf) {
                     Ok(size) => {
-                        info!(
-                            "Decoded {}/{} from {} capacity {}",
-                            buf.len(),
-                            size,
-                            packet.len(),
-                            audio_send.len()
-                        );
+                        if print % 25u32 == 0 {
+                            info!(
+                                "Decoded {}/{} from {} capacity {}",
+                                buf.len(),
+                                size,
+                                packet.len(),
+                                audio_send.len()
+                            );
+                        }
+                        print = print.wrapping_add(1);
                         for &sample in buf.iter() {
                             if audio_send.try_send(sample).is_err() {
                                 fell_behind = true;
@@ -354,6 +358,7 @@ fn main() -> Result<()> {
             let mut buf = vec![0f32; samples];
             let mut out = [0u8; MAX_PACKET];
             let mut fell_behind = false;
+            let mut print = 0u32;
             loop {
                 for sample in buf.iter_mut() {
                     *sample = match audio_recv.recv().ok() {
@@ -372,7 +377,10 @@ fn main() -> Result<()> {
                 debug!("Copied samples {} left in the queue", audio_recv.len());
                 match enc.encode(&buf, &mut out) {
                     Ok(size) => {
-                        info!("Encoded {} to {}", buf.len(), size);
+                        if print % 25 == 0 {
+                            info!("Encoded {} to {}", buf.len(), size);
+                        }
+                        print = print.wrapping_add(1);
                         let bytes = Bytes::copy_from_slice(&out[..size]);
                         if net_send.send(bytes).is_err() {
                             warn!("Cannot send to the channel");
