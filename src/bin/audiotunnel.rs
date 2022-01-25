@@ -18,12 +18,12 @@ use tcptunnel::{to_endpoint, EndPoint};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
-#[derive(Debug, Clone, ArgEnum)]
+#[derive(Debug, Clone, Copy, ArgEnum)]
 enum Codec {
     /// Opus
     Opus,
     /// Linear PCM
-    PCM,
+    Pcm,
 }
 
 /// Capture from an audio device and stream to udp or
@@ -128,10 +128,57 @@ fn output_device(dev: &str) -> Result<Device> {
     Ok(dev)
 }
 
-const MAX_PACKET: usize = 1500;
+const MAX_PACKET: usize = 1400;
 
 fn err_cb(err: cpal::StreamError) {
     warn!("Audio error {}", err);
+}
+
+trait Decoder: Send {
+    fn decode(&mut self, packet: &[u8], buf: &mut [f32]) -> anyhow::Result<usize>;
+}
+
+trait Encoder: Send {
+    fn encode(&mut self, buf: &[f32], packet: &mut [u8]) -> anyhow::Result<usize>;
+}
+
+impl Decoder for audiopus::coder::Decoder {
+    fn decode(&mut self, packet: &[u8], buf: &mut [f32]) -> anyhow::Result<usize> {
+        let size = self.decode_float(Some(packet), buf, false)?;
+
+        Ok(size)
+    }
+}
+
+impl Encoder for audiopus::coder::Encoder {
+    fn encode(&mut self, buf: &[f32], packet: &mut [u8]) -> anyhow::Result<usize> {
+        let size = self.encode_float(buf, packet)?;
+
+        Ok(size)
+    }
+}
+
+// TODO: validate input
+struct Pcm();
+
+impl Decoder for Pcm {
+    fn decode(&mut self, packet: &[u8], buf: &mut [f32]) -> anyhow::Result<usize> {
+        // TODO use array_chunks
+        for (b, p) in buf.iter_mut().zip(packet.chunks(4)) {
+            *b = f32::from_be_bytes(p.try_into()?);
+        }
+
+        Ok(buf.len().min(packet.len() / 4))
+    }
+}
+
+impl Encoder for Pcm {
+    fn encode(&mut self, buf: &[f32], packet: &mut [u8]) -> anyhow::Result<usize> {
+        for (p, b) in packet.chunks_mut(4).zip(buf.iter()) {
+            p.copy_from_slice(&b.to_be_bytes());
+        }
+        Ok(buf.len().min(packet.len() / 4) * 4)
+    }
 }
 
 fn main() -> Result<()> {
@@ -160,7 +207,10 @@ fn main() -> Result<()> {
     let rt = Runtime::new().unwrap();
 
     // 20ms frames
-    let samples = opt.sample_rate as usize * 20 * opt.channels as usize / 1000;
+    let samples = match opt.codec {
+        Codec::Opus => opt.sample_rate as usize * 20 * opt.channels as usize / 1000,
+        Codec::Pcm => MAX_PACKET / 4,
+    };
 
     // The channel to share samples between the codec and the audio device
     let (audio_send, audio_recv) = flume::bounded(samples * 20);
@@ -194,10 +244,17 @@ fn main() -> Result<()> {
 
         info!("Audio configuration {:?}", config);
 
-        let mut dec = audiopus::coder::Decoder::new(
-            SampleRate::try_from(config.sample_rate.0.try_into()?)?,
-            Channels::try_from(config.channels.try_into()?)?,
-        )?;
+        let mut dec = match opt.codec {
+            Codec::Opus => {
+                let dec = audiopus::coder::Decoder::new(
+                    SampleRate::try_from(config.sample_rate.0.try_into()?)?,
+                    Channels::try_from(config.channels.try_into()?)?,
+                )?;
+
+                Box::new(dec) as Box<dyn Decoder>
+            }
+            Codec::Pcm => Box::new(Pcm()) as Box<dyn Decoder>,
+        };
 
         let audio_stream = device.build_output_stream(&config, output_cb, err_cb)?;
 
@@ -207,7 +264,7 @@ fn main() -> Result<()> {
             for packet in net_recv.iter() {
                 let packet = packet.as_ref();
                 debug!("Received packet of {}", packet.len());
-                match dec.decode_float(Some(packet), &mut buf, false) {
+                match dec.decode(packet, &mut buf) {
                     Ok(size) => {
                         info!(
                             "Decoded {}/{} from {} capacity {}",
@@ -216,7 +273,7 @@ fn main() -> Result<()> {
                             packet.len(),
                             audio_send.len()
                         );
-                        for &sample in buf.iter() {
+                        for &sample in buf.iter().take(size) {
                             if audio_send.try_send(sample).is_err() {
                                 fell_behind = true;
                             }
@@ -277,11 +334,17 @@ fn main() -> Result<()> {
 
         info!("Audio configuration {:?}", config);
 
-        let enc = audiopus::coder::Encoder::new(
-            SampleRate::try_from(config.sample_rate.0.try_into()?)?,
-            Channels::try_from(config.channels.try_into()?)?,
-            audiopus::Application::Audio,
-        )?;
+        let mut enc = match opt.codec {
+            Codec::Opus => {
+                let enc = audiopus::coder::Encoder::new(
+                    SampleRate::try_from(config.sample_rate.0.try_into()?)?,
+                    Channels::try_from(config.channels.try_into()?)?,
+                    audiopus::Application::Audio,
+                )?;
+                Box::new(enc) as Box<dyn Encoder>
+            }
+            Codec::Pcm => Box::new(Pcm()) as Box<dyn Encoder>,
+        };
 
         let audio_stream = device.build_input_stream(&config, input_cb, err_cb)?;
 
@@ -307,7 +370,7 @@ fn main() -> Result<()> {
                     fell_behind = false;
                 }
                 debug!("Copied samples {} left in the queue", audio_recv.len());
-                match enc.encode_float(&buf, &mut out) {
+                match enc.encode(&buf, &mut out) {
                     Ok(size) => {
                         info!("Encoded {} to {}", buf.len(), size);
                         let bytes = Bytes::copy_from_slice(&out[..size]);
