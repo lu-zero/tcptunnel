@@ -154,6 +154,29 @@ impl Encoder for audiopus::coder::Encoder {
     }
 }
 
+// TODO: validate input
+struct Pcm();
+
+impl Decoder for Pcm {
+    fn decode(&mut self, packet: &[u8], buf: &mut [f32]) -> anyhow::Result<usize> {
+        // TODO use array_chunks
+        for (b, p) in buf.iter_mut().zip(packet.chunks(4)) {
+            *b = f32::from_be_bytes(p.try_into()?);
+        }
+
+        Ok(buf.len().min(packet.len() / 4))
+    }
+}
+
+impl Encoder for Pcm {
+    fn encode(&mut self, buf: &[f32], packet: &mut [u8]) -> anyhow::Result<usize> {
+        for (p, b) in packet.chunks_mut(4).zip(buf.iter()) {
+            p.copy_from_slice(&b.to_be_bytes());
+        }
+        Ok(buf.len().min(packet.len() / 4) * 4)
+    }
+}
+
 fn err_cb(err: cpal::StreamError) {
     warn!("Audio error {}", err);
 }
@@ -184,7 +207,10 @@ fn main() -> Result<()> {
     let rt = Runtime::new().unwrap();
 
     // 20ms frames
-    let samples = opt.sample_rate as usize * 20 * opt.channels as usize / 1000;
+    let samples = match opt.codec {
+        Codec::Opus => opt.sample_rate as usize * 20 * opt.channels as usize / 1000,
+        Codec::Pcm => MAX_PACKET / 4,
+    };
 
     // The channel to share samples between the codec and the audio device
     let (audio_send, audio_recv) = flume::bounded(samples * 20);
@@ -218,13 +244,16 @@ fn main() -> Result<()> {
 
         info!("Audio configuration {:?}", config);
 
-        let mut dec = {
-            let dec = audiopus::coder::Decoder::new(
-                SampleRate::try_from(config.sample_rate.0.try_into()?)?,
-                Channels::try_from(config.channels.try_into()?)?,
-            )?;
+        let mut dec = match opt.codec {
+            Codec::Opus => {
+                let dec = audiopus::coder::Decoder::new(
+                    SampleRate::try_from(config.sample_rate.0.try_into()?)?,
+                    Channels::try_from(config.channels.try_into()?)?,
+                )?;
 
-            Box::new(dec) as Box<dyn Decoder>
+                Box::new(dec) as Box<dyn Decoder>
+            }
+            Codec::Pcm => Box::new(Pcm()) as Box<dyn Decoder>,
         };
 
         let audio_stream = device.build_output_stream(&config, output_cb, err_cb)?;
@@ -305,13 +334,16 @@ fn main() -> Result<()> {
 
         info!("Audio configuration {:?}", config);
 
-        let mut enc = {
-            let enc = audiopus::coder::Encoder::new(
-                SampleRate::try_from(config.sample_rate.0.try_into()?)?,
-                Channels::try_from(config.channels.try_into()?)?,
-                audiopus::Application::Audio,
-            )?;
-            Box::new(enc) as Box<dyn Encoder>
+        let mut enc = match opt.codec {
+            Codec::Opus => {
+                let enc = audiopus::coder::Encoder::new(
+                    SampleRate::try_from(config.sample_rate.0.try_into()?)?,
+                    Channels::try_from(config.channels.try_into()?)?,
+                    audiopus::Application::Audio,
+                )?;
+                Box::new(enc) as Box<dyn Encoder>
+            }
+            Codec::Pcm => Box::new(Pcm()) as Box<dyn Encoder>,
         };
 
         let audio_stream = device.build_input_stream(&config, input_cb, err_cb)?;
