@@ -244,7 +244,11 @@ fn main() -> Result<()> {
         };
 
         let device = output_device(&opt.audio_device)?;
-        let mut config: cpal::StreamConfig = device.default_output_config()?.into();
+        let config = device.default_output_config()?;
+
+        info!("Buffer size {:?}", config.buffer_size());
+
+        let mut config: cpal::StreamConfig = config.into();
 
         config.sample_rate = cpal::SampleRate(opt.sample_rate);
         config.channels = opt.channels;
@@ -338,7 +342,11 @@ fn main() -> Result<()> {
         };
 
         let device = input_device(&opt.audio_device)?;
-        let mut config: cpal::StreamConfig = device.default_input_config()?.into();
+        let config = device.default_input_config()?;
+
+        info!("Buffer size {:?}", config.buffer_size());
+
+        let mut config: cpal::StreamConfig = config.into();
 
         config.sample_rate = cpal::SampleRate(opt.sample_rate);
         config.channels = opt.channels;
