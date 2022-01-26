@@ -70,6 +70,14 @@ struct Opt {
     /// Select a codec
     #[clap(long, default_value = "opus", arg_enum)]
     codec: Codec,
+
+    /// Use cbr (by default vbr is used when available)
+    #[clap(long)]
+    cbr: bool,
+
+    /// Set the target bitrate
+    #[clap(long)]
+    bitrate: Option<i32>,
 }
 
 fn input_endpoint(e: &EndPoint) -> anyhow::Result<UdpFramed<BytesCodec>> {
@@ -345,7 +353,10 @@ fn main() -> Result<()> {
                     Channels::try_from(config.channels.try_into()?)?,
                     audiopus::Application::Audio,
                 )?;
-                enc.disable_vbr()?;
+                enc.set_vbr(!opt.cbr)?;
+                if let Some(bitrate) = opt.bitrate {
+                    enc.set_bitrate(audiopus::Bitrate::BitsPerSecond(bitrate))?;
+                }
                 Box::new(enc) as Box<dyn Encoder>
             }
             Codec::Pcm => Box::new(Pcm()) as Box<dyn Encoder>,
