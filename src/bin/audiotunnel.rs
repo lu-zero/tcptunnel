@@ -131,24 +131,24 @@ fn output_device(dev: &str) -> Result<Device> {
 const MAX_PACKET: usize = 1400;
 
 trait Decoder: Send {
-    fn decode(&mut self, packet: &[u8], buf: &mut [f32]) -> anyhow::Result<usize>;
+    fn decode(&mut self, packet: &[u8], buf: &mut [i16]) -> anyhow::Result<usize>;
 }
 
 trait Encoder: Send {
-    fn encode(&mut self, buf: &[f32], packet: &mut [u8]) -> anyhow::Result<usize>;
+    fn encode(&mut self, buf: &[i16], packet: &mut [u8]) -> anyhow::Result<usize>;
 }
 
 impl Decoder for audiopus::coder::Decoder {
-    fn decode(&mut self, packet: &[u8], buf: &mut [f32]) -> anyhow::Result<usize> {
-        let size = self.decode_float(Some(packet), buf, false)?;
+    fn decode(&mut self, packet: &[u8], buf: &mut [i16]) -> anyhow::Result<usize> {
+        let size = self.decode(Some(packet), buf, false)?;
 
         Ok(size)
     }
 }
 
 impl Encoder for audiopus::coder::Encoder {
-    fn encode(&mut self, buf: &[f32], packet: &mut [u8]) -> anyhow::Result<usize> {
-        let size = self.encode_float(buf, packet)?;
+    fn encode(&mut self, buf: &[i16], packet: &mut [u8]) -> anyhow::Result<usize> {
+        let size = audiopus::coder::Encoder::encode(self, buf, packet)?;
 
         Ok(size)
     }
@@ -158,10 +158,10 @@ impl Encoder for audiopus::coder::Encoder {
 struct Pcm();
 
 impl Decoder for Pcm {
-    fn decode(&mut self, packet: &[u8], buf: &mut [f32]) -> anyhow::Result<usize> {
+    fn decode(&mut self, packet: &[u8], buf: &mut [i16]) -> anyhow::Result<usize> {
         // TODO use array_chunks
-        for (b, p) in buf.iter_mut().zip(packet.chunks(4)) {
-            *b = f32::from_be_bytes(p.try_into()?);
+        for (b, p) in buf.iter_mut().zip(packet.chunks(2)) {
+            *b = i16::from_be_bytes(p.try_into()?);
         }
 
         Ok(buf.len().min(packet.len() / 4))
@@ -169,11 +169,11 @@ impl Decoder for Pcm {
 }
 
 impl Encoder for Pcm {
-    fn encode(&mut self, buf: &[f32], packet: &mut [u8]) -> anyhow::Result<usize> {
-        for (p, b) in packet.chunks_mut(4).zip(buf.iter()) {
+    fn encode(&mut self, buf: &[i16], packet: &mut [u8]) -> anyhow::Result<usize> {
+        for (p, b) in packet.chunks_mut(2).zip(buf.iter()) {
             p.copy_from_slice(&b.to_be_bytes());
         }
-        Ok(buf.len().min(packet.len() / 4) * 4)
+        Ok(buf.len().min(packet.len() / 2) * 2)
     }
 }
 
@@ -209,7 +209,7 @@ fn main() -> Result<()> {
     // 20ms frames
     let samples = match opt.codec {
         Codec::Opus => opt.sample_rate as usize * 20 * opt.channels as usize / 1000,
-        Codec::Pcm => MAX_PACKET / 4,
+        Codec::Pcm => MAX_PACKET / 2,
     };
 
     // The channel to share samples between the codec and the audio device
@@ -218,7 +218,7 @@ fn main() -> Result<()> {
     let (net_send, net_recv) = flume::bounded::<Bytes>(4);
 
     if let Some(input) = opt.input {
-        let output_cb = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+        let output_cb = move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
             let mut input_fell_behind = false;
             debug!("Writing audio data in a {} buffer", data.len());
             for sample in data {
@@ -226,7 +226,7 @@ fn main() -> Result<()> {
                     Some(s) => s,
                     None => {
                         input_fell_behind = true;
-                        0.0
+                        0
                     }
                 };
             }
@@ -259,7 +259,7 @@ fn main() -> Result<()> {
         let audio_stream = device.build_output_stream(&config, output_cb, err_cb)?;
 
         std::thread::spawn(move || {
-            let mut buf = vec![0f32; samples];
+            let mut buf = vec![0i16; samples];
             let mut fell_behind = false;
             let mut print = 0;
             for packet in net_recv.iter() {
@@ -316,7 +316,7 @@ fn main() -> Result<()> {
 
         rt.block_on(async move { udp_input(&input, &net_send).await })?;
     } else if let Some(output) = opt.output {
-        let input_cb = move |data: &[f32], _: &cpal::InputCallbackInfo| {
+        let input_cb = move |data: &[i16], _: &cpal::InputCallbackInfo| {
             let mut fell_behind = false;
             debug!("Sending audio buffer of {}", data.len());
             for &sample in data {
@@ -340,11 +340,12 @@ fn main() -> Result<()> {
 
         let mut enc = match opt.codec {
             Codec::Opus => {
-                let enc = audiopus::coder::Encoder::new(
+                let mut enc = audiopus::coder::Encoder::new(
                     SampleRate::try_from(config.sample_rate.0.try_into()?)?,
                     Channels::try_from(config.channels.try_into()?)?,
                     audiopus::Application::Audio,
                 )?;
+                enc.disable_vbr()?;
                 Box::new(enc) as Box<dyn Encoder>
             }
             Codec::Pcm => Box::new(Pcm()) as Box<dyn Encoder>,
@@ -355,7 +356,7 @@ fn main() -> Result<()> {
         audio_stream.play()?;
 
         std::thread::spawn(move || {
-            let mut buf = vec![0f32; samples];
+            let mut buf = vec![0i16; samples];
             let mut out = [0u8; MAX_PACKET];
             let mut fell_behind = false;
             let mut print = 0u32;
@@ -365,7 +366,7 @@ fn main() -> Result<()> {
                         Some(s) => s,
                         None => {
                             fell_behind = true;
-                            0.0
+                            0
                         }
                     }
                 }
