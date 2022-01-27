@@ -78,6 +78,10 @@ struct Opt {
     /// Set the target bitrate
     #[clap(long)]
     bitrate: Option<i32>,
+
+    /// Prebuffering
+    #[clap(long, default_value = "0")]
+    prebuffering: usize,
 }
 
 fn input_endpoint(e: &EndPoint) -> anyhow::Result<UdpFramed<BytesCodec>> {
@@ -219,13 +223,18 @@ fn main() -> Result<()> {
         Codec::Opus => opt.sample_rate as usize * 20 * opt.channels as usize / 1000,
         Codec::Pcm => MAX_PACKET / 2,
     };
+    let prebuffering = opt.sample_rate as usize * opt.prebuffering * opt.channels as usize / 1000;
 
     // The channel to share samples between the codec and the audio device
-    let (audio_send, audio_recv) = flume::bounded(samples * 20);
+    let (audio_send, audio_recv) = flume::bounded(samples * 20 + prebuffering);
     // The channel to share packets between the codec and the network
     let (net_send, net_recv) = flume::bounded::<Bytes>(4);
 
     if let Some(input) = opt.input {
+        for _ in 0..prebuffering {
+            let _ = audio_send.send(0);
+        }
+
         let output_cb = move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
             let mut input_fell_behind = false;
             debug!("Writing audio data in a {} buffer", data.len());
