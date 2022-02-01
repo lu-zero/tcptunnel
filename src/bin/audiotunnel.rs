@@ -1,10 +1,10 @@
 use std::convert::TryInto;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 use audiopus::{Channels, SampleRate, TryFrom};
 use bytes::Bytes;
-use clap::{ArgEnum, Args, Parser};
+use clap::{ArgEnum, Args, Parser, Subcommand};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Device;
 use flume::{Receiver, Sender};
@@ -24,6 +24,15 @@ enum Codec {
     Opus,
     /// Linear PCM
     Pcm,
+}
+
+impl Codec {
+    fn samples(&self, audio: &AudioOpt) -> usize {
+        match self {
+            Codec::Opus => audio.sample_rate as usize * 20 * audio.channels as usize / 1000,
+            Codec::Pcm => MAX_PACKET / 2,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -97,7 +106,7 @@ impl AudioOpt {
 }
 
 #[derive(Debug, Args)]
-struct CodecOpt {
+struct EncoderOpt {
     /// Select a codec
     #[clap(long, default_value = "opus", arg_enum)]
     codec: Codec,
@@ -111,23 +120,7 @@ struct CodecOpt {
     bitrate: Option<i32>,
 }
 
-impl CodecOpt {
-    fn decoder(&self, audio: &AudioOpt) -> Result<Box<dyn Decoder>> {
-        let dec = match self.codec {
-            Codec::Opus => {
-                let dec = audiopus::coder::Decoder::new(
-                    SampleRate::try_from(audio.sample_rate.try_into()?)?,
-                    Channels::try_from(audio.channels.try_into()?)?,
-                )?;
-
-                Box::new(dec) as Box<dyn Decoder>
-            }
-            Codec::Pcm => Box::new(Pcm()) as Box<dyn Decoder>,
-        };
-
-        Ok(dec)
-    }
-
+impl EncoderOpt {
     fn encoder(&self, audio: &AudioOpt) -> Result<Box<dyn Encoder>> {
         let enc = match self.codec {
             Codec::Opus => {
@@ -146,13 +139,258 @@ impl CodecOpt {
         };
         Ok(enc)
     }
+}
 
-    fn samples(&self, audio: &AudioOpt) -> usize {
-        match self.codec {
-            Codec::Opus => audio.sample_rate as usize * 20 * audio.channels as usize / 1000,
-            Codec::Pcm => MAX_PACKET / 2,
-        }
+#[derive(Debug, Args)]
+struct DecoderOpt {
+    /// Select a codec
+    #[clap(long, default_value = "opus", arg_enum)]
+    codec: Codec,
+}
+
+impl DecoderOpt {
+    fn decoder(&self, audio: &AudioOpt) -> Result<Box<dyn Decoder>> {
+        let dec = match self.codec {
+            Codec::Opus => {
+                let dec = audiopus::coder::Decoder::new(
+                    SampleRate::try_from(audio.sample_rate.try_into()?)?,
+                    Channels::try_from(audio.channels.try_into()?)?,
+                )?;
+
+                Box::new(dec) as Box<dyn Decoder>
+            }
+            Codec::Pcm => Box::new(Pcm()) as Box<dyn Decoder>,
+        };
+
+        Ok(dec)
     }
+}
+
+#[derive(Debug, Args)]
+struct Playback {
+    /// Input source url
+    /// It supports the following query parameters
+    /// multicast=<ipv4_interface or ipv6_index>
+    /// multicast_ttl=<u32> (IPv4-only)
+    /// multicast_hops=<u32> (IPv6-only)
+    /// buffer=<usize>
+    #[clap(long, short,  parse(try_from_str = to_endpoint))]
+    input: EndPoint,
+
+    #[clap(flatten)]
+    codec: DecoderOpt,
+
+    /// Prebuffering
+    #[clap(long, default_value = "0")]
+    prebuffering: usize,
+}
+
+impl Playback {
+    fn run(self, audio: &AudioOpt) -> Result<()> {
+        let rt = Runtime::new().unwrap();
+
+        // 20ms frames
+        let samples = self.codec.codec.samples(audio);
+        let prebuffering = audio.prebuffering(self.prebuffering);
+
+        // The channel to share samples between the codec and the audio device
+        let (audio_send, audio_recv) = flume::bounded(samples * 20 + prebuffering);
+        // The channel to share packets between the codec and the network
+        let (net_send, net_recv) = flume::bounded::<Bytes>(4);
+
+        for _ in 0..prebuffering {
+            let _ = audio_send.send(0);
+        }
+
+        let output_cb = move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+            let mut input_fell_behind = false;
+            debug!("Writing audio data in a {} buffer", data.len());
+            for sample in data {
+                *sample = match audio_recv.try_recv().ok() {
+                    Some(s) => s,
+                    None => {
+                        input_fell_behind = true;
+                        0
+                    }
+                };
+            }
+            if input_fell_behind {
+                warn!("decoding fell behind!!");
+            }
+        };
+
+        let audio_stream = audio.output(output_cb)?;
+
+        let mut dec = self.codec.decoder(&audio)?;
+
+        std::thread::spawn(move || {
+            let mut buf = vec![0i16; samples];
+            let mut fell_behind = false;
+            let mut print = 0;
+            for packet in net_recv.iter() {
+                let packet = packet.as_ref();
+                debug!("Received packet of {}", packet.len());
+                match dec.decode(packet, &mut buf) {
+                    Ok(size) => {
+                        if print % 25u32 == 0 {
+                            info!(
+                                "Decoded {}/{} from {} capacity {}",
+                                buf.len(),
+                                size,
+                                packet.len(),
+                                audio_send.len()
+                            );
+                        }
+                        print = print.wrapping_add(1);
+                        for &sample in buf.iter() {
+                            if audio_send.try_send(sample).is_err() {
+                                fell_behind = true;
+                            }
+                        }
+
+                        if fell_behind {
+                            warn!("Input stream fell behind!!");
+                            fell_behind = false;
+                        }
+                    }
+                    Err(err) => warn!("Error decoding {}", err),
+                }
+            }
+        });
+
+        async fn udp_input(e: &EndPoint, send: &Sender<Bytes>) -> anyhow::Result<()> {
+            let (_sink, stream) = input_endpoint(&e)?.split();
+
+            let map = stream
+                .map_err(|e| {
+                    tracing::error!("Error {}", e);
+                    anyhow::Error::new(e)
+                })
+                .try_for_each(move |(msg, _addr)| {
+                    debug!("Received from network {} data", msg.len());
+                    send.send_async(msg.freeze())
+                        .map_err(|e| anyhow::Error::new(e))
+                });
+
+            map.await?;
+
+            Ok(())
+        }
+
+        audio_stream.play()?;
+
+        rt.block_on(async move { udp_input(&self.input, &net_send).await })?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Args)]
+struct Record {
+    /// Output sink url
+    /// It supports the following query parameters
+    /// multicast=<ipv4_interface or ipv6_index>
+    /// multicast_ttl=<u32> (IPv4-only)
+    /// multicast_hops=<u32> (IPv6-only)
+    /// buffer=<usize>
+    #[clap(long, short, parse(try_from_str = to_endpoint))]
+    output: EndPoint,
+
+    #[clap(flatten)]
+    codec: EncoderOpt,
+}
+
+impl Record {
+    fn run(&self, audio: &AudioOpt) -> Result<()> {
+        let rt = Runtime::new().unwrap();
+
+        // 20ms frames
+        let samples = self.codec.codec.samples(audio);
+
+        // The channel to share samples between the codec and the audio device
+        let (audio_send, audio_recv) = flume::bounded(samples * 20);
+        // The channel to share packets between the codec and the network
+        let (net_send, net_recv) = flume::bounded::<Bytes>(4);
+
+        let input_cb = move |data: &[i16], _: &cpal::InputCallbackInfo| {
+            let mut fell_behind = false;
+            debug!("Sending audio buffer of {}", data.len());
+            for &sample in data {
+                if audio_send.try_send(sample).is_err() {
+                    fell_behind = true;
+                }
+            }
+            if fell_behind {
+                warn!("encoding fell behind!!");
+            }
+        };
+
+        let audio_stream = audio.input(input_cb)?;
+
+        let mut enc = self.codec.encoder(&audio)?;
+
+        audio_stream.play()?;
+
+        std::thread::spawn(move || {
+            let mut buf = vec![0i16; samples];
+            let mut out = [0u8; MAX_PACKET];
+            let mut fell_behind = false;
+            let mut print = 0u32;
+            loop {
+                for sample in buf.iter_mut() {
+                    *sample = match audio_recv.recv().ok() {
+                        Some(s) => s,
+                        None => {
+                            fell_behind = true;
+                            0
+                        }
+                    }
+                }
+
+                if fell_behind {
+                    warn!("Input stream fell behind!!");
+                    fell_behind = false;
+                }
+                debug!("Copied samples {} left in the queue", audio_recv.len());
+                match enc.encode(&buf, &mut out) {
+                    Ok(size) => {
+                        if print % 25 == 0 {
+                            info!("Encoded {} to {}", buf.len(), size);
+                        }
+                        print = print.wrapping_add(1);
+                        let bytes = Bytes::copy_from_slice(&out[..size]);
+                        if net_send.send(bytes).is_err() {
+                            warn!("Cannot send to the channel");
+                        }
+                    }
+                    Err(err) => warn!("Error encoding {}", err),
+                }
+            }
+        });
+
+        async fn udp_output(e: &EndPoint, recv: &Receiver<Bytes>) -> anyhow::Result<()> {
+            let addr = e.addr;
+            let (sink, _stream) = output_endpoint(&e)?.split();
+
+            let read = recv.stream().map(move |msg| Ok((msg, addr)));
+
+            read.forward(sink).await?;
+
+            Ok(())
+        }
+
+        rt.block_on(async move { udp_output(&self.output, &net_recv).await })?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Subcommand)]
+enum Cmd {
+    /// Receive from UDP, decode and playback through the audio device
+    Playback(Playback),
+    /// Record from the audio device, encode and send over UDP
+    Record(Record),
 }
 
 /// Capture from an audio device and stream to udp or
@@ -162,33 +400,12 @@ struct Opt {
     #[clap(flatten)]
     audio: AudioOpt,
 
-    /// Input source url
-    /// It supports the following query parameters
-    /// multicast=<ipv4_interface or ipv6_index>
-    /// multicast_ttl=<u32> (IPv4-only)
-    /// multicast_hops=<u32> (IPv6-only)
-    /// buffer=<usize>
-    #[clap(long, short,  parse(try_from_str = to_endpoint))]
-    input: Option<EndPoint>,
-    /// Output sink url
-    /// It supports the following query parameters
-    /// multicast=<ipv4_interface or ipv6_index>
-    /// multicast_ttl=<u32> (IPv4-only)
-    /// multicast_hops=<u32> (IPv6-only)
-    /// buffer=<usize>
-    #[clap(long, short, parse(try_from_str = to_endpoint))]
-    output: Option<EndPoint>,
-
     /// Verbose logging
-    #[clap(long, short)]
+    #[clap(long, short, global = true)]
     verbose: bool,
 
-    #[clap(flatten)]
-    codec: CodecOpt,
-
-    /// Prebuffering
-    #[clap(long, default_value = "0")]
-    prebuffering: usize,
+    #[clap(subcommand)]
+    command: Cmd,
 }
 
 fn input_endpoint(e: &EndPoint) -> anyhow::Result<UdpFramed<BytesCodec>> {
@@ -317,176 +534,8 @@ fn main() -> Result<()> {
         .with_env_filter(filter_layer)
         .init();
 
-    if (opt.input.is_some() && opt.output.is_some())
-        || (opt.input.is_none() && opt.output.is_none())
-    {
-        bail!("Either set an input or an output");
+    match opt.command {
+        Cmd::Playback(input) => input.run(&opt.audio),
+        Cmd::Record(output) => output.run(&opt.audio),
     }
-
-    let rt = Runtime::new().unwrap();
-
-    // 20ms frames
-    let samples = opt.codec.samples(&opt.audio);
-    let prebuffering = opt.audio.prebuffering(opt.prebuffering);
-
-    // The channel to share samples between the codec and the audio device
-    let (audio_send, audio_recv) = flume::bounded(samples * 20 + prebuffering);
-    // The channel to share packets between the codec and the network
-    let (net_send, net_recv) = flume::bounded::<Bytes>(4);
-
-    if let Some(input) = opt.input {
-        for _ in 0..prebuffering {
-            let _ = audio_send.send(0);
-        }
-
-        let output_cb = move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
-            let mut input_fell_behind = false;
-            debug!("Writing audio data in a {} buffer", data.len());
-            for sample in data {
-                *sample = match audio_recv.try_recv().ok() {
-                    Some(s) => s,
-                    None => {
-                        input_fell_behind = true;
-                        0
-                    }
-                };
-            }
-            if input_fell_behind {
-                warn!("decoding fell behind!!");
-            }
-        };
-
-        let audio_stream = opt.audio.output(output_cb)?;
-
-        let mut dec = opt.codec.decoder(&opt.audio)?;
-
-        std::thread::spawn(move || {
-            let mut buf = vec![0i16; samples];
-            let mut fell_behind = false;
-            let mut print = 0;
-            for packet in net_recv.iter() {
-                let packet = packet.as_ref();
-                debug!("Received packet of {}", packet.len());
-                match dec.decode(packet, &mut buf) {
-                    Ok(size) => {
-                        if print % 25u32 == 0 {
-                            info!(
-                                "Decoded {}/{} from {} capacity {}",
-                                buf.len(),
-                                size,
-                                packet.len(),
-                                audio_send.len()
-                            );
-                        }
-                        print = print.wrapping_add(1);
-                        for &sample in buf.iter() {
-                            if audio_send.try_send(sample).is_err() {
-                                fell_behind = true;
-                            }
-                        }
-
-                        if fell_behind {
-                            warn!("Input stream fell behind!!");
-                            fell_behind = false;
-                        }
-                    }
-                    Err(err) => warn!("Error decoding {}", err),
-                }
-            }
-        });
-
-        async fn udp_input(e: &EndPoint, send: &Sender<Bytes>) -> anyhow::Result<()> {
-            let (_sink, stream) = input_endpoint(&e)?.split();
-
-            let map = stream
-                .map_err(|e| {
-                    tracing::error!("Error {}", e);
-                    anyhow::Error::new(e)
-                })
-                .try_for_each(move |(msg, _addr)| {
-                    debug!("Received from network {} data", msg.len());
-                    send.send_async(msg.freeze())
-                        .map_err(|e| anyhow::Error::new(e))
-                });
-
-            map.await?;
-
-            Ok(())
-        }
-
-        audio_stream.play()?;
-
-        rt.block_on(async move { udp_input(&input, &net_send).await })?;
-    } else if let Some(output) = opt.output {
-        let input_cb = move |data: &[i16], _: &cpal::InputCallbackInfo| {
-            let mut fell_behind = false;
-            debug!("Sending audio buffer of {}", data.len());
-            for &sample in data {
-                if audio_send.try_send(sample).is_err() {
-                    fell_behind = true;
-                }
-            }
-            if fell_behind {
-                warn!("encoding fell behind!!");
-            }
-        };
-
-        let audio_stream = opt.audio.input(input_cb)?;
-
-        let mut enc = opt.codec.encoder(&opt.audio)?;
-
-        audio_stream.play()?;
-
-        std::thread::spawn(move || {
-            let mut buf = vec![0i16; samples];
-            let mut out = [0u8; MAX_PACKET];
-            let mut fell_behind = false;
-            let mut print = 0u32;
-            loop {
-                for sample in buf.iter_mut() {
-                    *sample = match audio_recv.recv().ok() {
-                        Some(s) => s,
-                        None => {
-                            fell_behind = true;
-                            0
-                        }
-                    }
-                }
-
-                if fell_behind {
-                    warn!("Input stream fell behind!!");
-                    fell_behind = false;
-                }
-                debug!("Copied samples {} left in the queue", audio_recv.len());
-                match enc.encode(&buf, &mut out) {
-                    Ok(size) => {
-                        if print % 25 == 0 {
-                            info!("Encoded {} to {}", buf.len(), size);
-                        }
-                        print = print.wrapping_add(1);
-                        let bytes = Bytes::copy_from_slice(&out[..size]);
-                        if net_send.send(bytes).is_err() {
-                            warn!("Cannot send to the channel");
-                        }
-                    }
-                    Err(err) => warn!("Error encoding {}", err),
-                }
-            }
-        });
-
-        async fn udp_output(e: &EndPoint, recv: &Receiver<Bytes>) -> anyhow::Result<()> {
-            let addr = e.addr;
-            let (sink, _stream) = output_endpoint(&e)?.split();
-
-            let read = recv.stream().map(move |msg| Ok((msg, addr)));
-
-            read.forward(sink).await?;
-
-            Ok(())
-        }
-
-        rt.block_on(async move { udp_output(&output, &net_recv).await })?;
-    }
-
-    Ok(())
 }
