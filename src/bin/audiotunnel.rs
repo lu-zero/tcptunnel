@@ -4,7 +4,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use anyhow::{anyhow, bail, Result};
 use audiopus::{Channels, SampleRate, TryFrom};
 use bytes::Bytes;
-use clap::{ArgEnum, Parser};
+use clap::{ArgEnum, Args, Parser};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Device;
 use flume::{Receiver, Sender};
@@ -26,10 +26,78 @@ enum Codec {
     Pcm,
 }
 
+#[derive(Debug, Args)]
+struct AudioOpt {
+    /// The input or output audio device to use
+    #[clap(long, short, default_value = "default")]
+    audio_device: String,
+
+    /// The audio sample rate
+    #[clap(long, short, default_value = "48000")]
+    sample_rate: u32,
+
+    /// The number of audio channels
+    #[clap(long, short, default_value = "1")]
+    channels: u16,
+
+    /// The size of the audio buffer in use in samples
+    #[clap(long, short, default_value = "500")]
+    buffer: u32,
+}
+
+impl AudioOpt {
+    fn input<F>(&self, cb: F) -> Result<(cpal::Stream, cpal::StreamConfig)>
+    where
+        F: FnMut(&[i16], &cpal::InputCallbackInfo) + Send + 'static,
+    {
+        let device = input_device(&self.audio_device)?;
+        let config = device.default_input_config()?;
+
+        info!("Buffer size {:?}", config.buffer_size());
+
+        let mut config: cpal::StreamConfig = config.into();
+
+        config.sample_rate = cpal::SampleRate(self.sample_rate);
+        config.channels = self.channels;
+        config.buffer_size = cpal::BufferSize::Fixed(self.buffer);
+
+        info!("Audio configuration {:?}", config);
+
+        let stream = device.build_input_stream(&config, cb, err_cb)?;
+
+        Ok((stream, config))
+    }
+
+    fn output<F>(&self, cb: F) -> Result<(cpal::Stream, cpal::StreamConfig)>
+    where
+        F: FnMut(&mut [i16], &cpal::OutputCallbackInfo) + Send + 'static,
+    {
+        let device = output_device(&self.audio_device)?;
+        let config = device.default_output_config()?;
+
+        info!("Buffer size {:?}", config.buffer_size());
+
+        let mut config: cpal::StreamConfig = config.into();
+
+        config.sample_rate = cpal::SampleRate(self.sample_rate);
+        config.channels = self.channels;
+        config.buffer_size = cpal::BufferSize::Fixed(self.buffer);
+
+        info!("Audio configuration {:?}", config);
+
+        let stream = device.build_output_stream(&config, cb, err_cb)?;
+
+        Ok((stream, config))
+    }
+}
+
 /// Capture from an audio device and stream to udp or
 /// listen to udp and output to an audio device
 #[derive(Debug, Parser)]
 struct Opt {
+    #[clap(flatten)]
+    audio: AudioOpt,
+
     /// Input source url
     /// It supports the following query parameters
     /// multicast=<ipv4_interface or ipv6_index>
@@ -46,22 +114,6 @@ struct Opt {
     /// buffer=<usize>
     #[clap(long, short, parse(try_from_str = to_endpoint))]
     output: Option<EndPoint>,
-
-    /// The input or output audio device to use
-    #[clap(long, short, default_value = "default")]
-    audio_device: String,
-
-    /// The audio sample rate
-    #[clap(long, short, default_value = "48000")]
-    sample_rate: u32,
-
-    /// The number of audio channels
-    #[clap(long, short, default_value = "1")]
-    channels: u16,
-
-    /// The size of the audio buffer in use in samples
-    #[clap(long, short, default_value = "500")]
-    buffer: u32,
 
     /// Verbose logging
     #[clap(long, short)]
@@ -220,10 +272,11 @@ fn main() -> Result<()> {
 
     // 20ms frames
     let samples = match opt.codec {
-        Codec::Opus => opt.sample_rate as usize * 20 * opt.channels as usize / 1000,
+        Codec::Opus => opt.audio.sample_rate as usize * 20 * opt.audio.channels as usize / 1000,
         Codec::Pcm => MAX_PACKET / 2,
     };
-    let prebuffering = opt.sample_rate as usize * opt.prebuffering * opt.channels as usize / 1000;
+    let prebuffering =
+        opt.audio.sample_rate as usize * opt.prebuffering * opt.audio.channels as usize / 1000;
 
     // The channel to share samples between the codec and the audio device
     let (audio_send, audio_recv) = flume::bounded(samples * 20 + prebuffering);
@@ -252,18 +305,7 @@ fn main() -> Result<()> {
             }
         };
 
-        let device = output_device(&opt.audio_device)?;
-        let config = device.default_output_config()?;
-
-        info!("Buffer size {:?}", config.buffer_size());
-
-        let mut config: cpal::StreamConfig = config.into();
-
-        config.sample_rate = cpal::SampleRate(opt.sample_rate);
-        config.channels = opt.channels;
-        config.buffer_size = cpal::BufferSize::Fixed(opt.buffer);
-
-        info!("Audio configuration {:?}", config);
+        let (audio_stream, config) = opt.audio.output(output_cb)?;
 
         let mut dec = match opt.codec {
             Codec::Opus => {
@@ -276,8 +318,6 @@ fn main() -> Result<()> {
             }
             Codec::Pcm => Box::new(Pcm()) as Box<dyn Decoder>,
         };
-
-        let audio_stream = device.build_output_stream(&config, output_cb, err_cb)?;
 
         std::thread::spawn(move || {
             let mut buf = vec![0i16; samples];
@@ -350,18 +390,7 @@ fn main() -> Result<()> {
             }
         };
 
-        let device = input_device(&opt.audio_device)?;
-        let config = device.default_input_config()?;
-
-        info!("Buffer size {:?}", config.buffer_size());
-
-        let mut config: cpal::StreamConfig = config.into();
-
-        config.sample_rate = cpal::SampleRate(opt.sample_rate);
-        config.channels = opt.channels;
-        config.buffer_size = cpal::BufferSize::Fixed(opt.buffer);
-
-        info!("Audio configuration {:?}", config);
+        let (audio_stream, config) = opt.audio.input(input_cb)?;
 
         let mut enc = match opt.codec {
             Codec::Opus => {
@@ -378,8 +407,6 @@ fn main() -> Result<()> {
             }
             Codec::Pcm => Box::new(Pcm()) as Box<dyn Encoder>,
         };
-
-        let audio_stream = device.build_input_stream(&config, input_cb, err_cb)?;
 
         audio_stream.play()?;
 
