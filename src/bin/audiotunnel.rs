@@ -46,7 +46,7 @@ struct AudioOpt {
 }
 
 impl AudioOpt {
-    fn input<F>(&self, cb: F) -> Result<(cpal::Stream, cpal::StreamConfig)>
+    fn input<F>(&self, cb: F) -> Result<cpal::Stream>
     where
         F: FnMut(&[i16], &cpal::InputCallbackInfo) + Send + 'static,
     {
@@ -65,10 +65,10 @@ impl AudioOpt {
 
         let stream = device.build_input_stream(&config, cb, err_cb)?;
 
-        Ok((stream, config))
+        Ok(stream)
     }
 
-    fn output<F>(&self, cb: F) -> Result<(cpal::Stream, cpal::StreamConfig)>
+    fn output<F>(&self, cb: F) -> Result<cpal::Stream>
     where
         F: FnMut(&mut [i16], &cpal::OutputCallbackInfo) + Send + 'static,
     {
@@ -87,7 +87,71 @@ impl AudioOpt {
 
         let stream = device.build_output_stream(&config, cb, err_cb)?;
 
-        Ok((stream, config))
+        Ok(stream)
+    }
+
+    /// Amount of samples from ms
+    fn prebuffering(&self, ms_prebuffering: usize) -> usize {
+        self.sample_rate as usize * ms_prebuffering * self.channels as usize / 1000
+    }
+}
+
+#[derive(Debug, Args)]
+struct CodecOpt {
+    /// Select a codec
+    #[clap(long, default_value = "opus", arg_enum)]
+    codec: Codec,
+
+    /// Use cbr (by default vbr is used when available)
+    #[clap(long)]
+    cbr: bool,
+
+    /// Set the target bitrate
+    #[clap(long)]
+    bitrate: Option<i32>,
+}
+
+impl CodecOpt {
+    fn decoder(&self, audio: &AudioOpt) -> Result<Box<dyn Decoder>> {
+        let dec = match self.codec {
+            Codec::Opus => {
+                let dec = audiopus::coder::Decoder::new(
+                    SampleRate::try_from(audio.sample_rate.try_into()?)?,
+                    Channels::try_from(audio.channels.try_into()?)?,
+                )?;
+
+                Box::new(dec) as Box<dyn Decoder>
+            }
+            Codec::Pcm => Box::new(Pcm()) as Box<dyn Decoder>,
+        };
+
+        Ok(dec)
+    }
+
+    fn encoder(&self, audio: &AudioOpt) -> Result<Box<dyn Encoder>> {
+        let enc = match self.codec {
+            Codec::Opus => {
+                let mut enc = audiopus::coder::Encoder::new(
+                    SampleRate::try_from(audio.sample_rate.try_into()?)?,
+                    Channels::try_from(audio.channels.try_into()?)?,
+                    audiopus::Application::Audio,
+                )?;
+                enc.set_vbr(!self.cbr)?;
+                if let Some(bitrate) = self.bitrate {
+                    enc.set_bitrate(audiopus::Bitrate::BitsPerSecond(bitrate))?;
+                }
+                Box::new(enc) as Box<dyn Encoder>
+            }
+            Codec::Pcm => Box::new(Pcm()) as Box<dyn Encoder>,
+        };
+        Ok(enc)
+    }
+
+    fn samples(&self, audio: &AudioOpt) -> usize {
+        match self.codec {
+            Codec::Opus => audio.sample_rate as usize * 20 * audio.channels as usize / 1000,
+            Codec::Pcm => MAX_PACKET / 2,
+        }
     }
 }
 
@@ -119,17 +183,8 @@ struct Opt {
     #[clap(long, short)]
     verbose: bool,
 
-    /// Select a codec
-    #[clap(long, default_value = "opus", arg_enum)]
-    codec: Codec,
-
-    /// Use cbr (by default vbr is used when available)
-    #[clap(long)]
-    cbr: bool,
-
-    /// Set the target bitrate
-    #[clap(long)]
-    bitrate: Option<i32>,
+    #[clap(flatten)]
+    codec: CodecOpt,
 
     /// Prebuffering
     #[clap(long, default_value = "0")]
@@ -271,12 +326,8 @@ fn main() -> Result<()> {
     let rt = Runtime::new().unwrap();
 
     // 20ms frames
-    let samples = match opt.codec {
-        Codec::Opus => opt.audio.sample_rate as usize * 20 * opt.audio.channels as usize / 1000,
-        Codec::Pcm => MAX_PACKET / 2,
-    };
-    let prebuffering =
-        opt.audio.sample_rate as usize * opt.prebuffering * opt.audio.channels as usize / 1000;
+    let samples = opt.codec.samples(&opt.audio);
+    let prebuffering = opt.audio.prebuffering(opt.prebuffering);
 
     // The channel to share samples between the codec and the audio device
     let (audio_send, audio_recv) = flume::bounded(samples * 20 + prebuffering);
@@ -305,19 +356,9 @@ fn main() -> Result<()> {
             }
         };
 
-        let (audio_stream, config) = opt.audio.output(output_cb)?;
+        let audio_stream = opt.audio.output(output_cb)?;
 
-        let mut dec = match opt.codec {
-            Codec::Opus => {
-                let dec = audiopus::coder::Decoder::new(
-                    SampleRate::try_from(config.sample_rate.0.try_into()?)?,
-                    Channels::try_from(config.channels.try_into()?)?,
-                )?;
-
-                Box::new(dec) as Box<dyn Decoder>
-            }
-            Codec::Pcm => Box::new(Pcm()) as Box<dyn Decoder>,
-        };
+        let mut dec = opt.codec.decoder(&opt.audio)?;
 
         std::thread::spawn(move || {
             let mut buf = vec![0i16; samples];
@@ -390,23 +431,9 @@ fn main() -> Result<()> {
             }
         };
 
-        let (audio_stream, config) = opt.audio.input(input_cb)?;
+        let audio_stream = opt.audio.input(input_cb)?;
 
-        let mut enc = match opt.codec {
-            Codec::Opus => {
-                let mut enc = audiopus::coder::Encoder::new(
-                    SampleRate::try_from(config.sample_rate.0.try_into()?)?,
-                    Channels::try_from(config.channels.try_into()?)?,
-                    audiopus::Application::Audio,
-                )?;
-                enc.set_vbr(!opt.cbr)?;
-                if let Some(bitrate) = opt.bitrate {
-                    enc.set_bitrate(audiopus::Bitrate::BitsPerSecond(bitrate))?;
-                }
-                Box::new(enc) as Box<dyn Encoder>
-            }
-            Codec::Pcm => Box::new(Pcm()) as Box<dyn Encoder>,
-        };
+        let mut enc = opt.codec.encoder(&opt.audio)?;
 
         audio_stream.play()?;
 
