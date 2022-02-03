@@ -561,7 +561,7 @@ impl Decoder for Pcm {
             *b = i16::from_be_bytes(p.try_into()?);
         }
 
-        Ok(buf.len().min(packet.len() / 4))
+        Ok(buf.len().min(packet.len() / 2))
     }
 }
 
