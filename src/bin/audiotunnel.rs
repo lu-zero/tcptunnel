@@ -100,9 +100,8 @@ impl AudioOpt {
         Ok(stream)
     }
 
-    /// Amount of samples from ms
-    fn prebuffering(&self, ms_prebuffering: usize) -> usize {
-        self.sample_rate as usize * ms_prebuffering * self.channels as usize / 1000
+    fn samples(&self, ms: usize) -> usize {
+        self.sample_rate as usize * ms * self.channels as usize / 1000
     }
 }
 
@@ -222,7 +221,7 @@ impl Playback {
 
         // 20ms frames
         let samples = self.codec.codec.samples(audio);
-        let prebuffering = audio.prebuffering(self.prebuffering);
+        let prebuffering = audio.samples(self.prebuffering);
 
         // The channel to share samples between the codec and the audio device
         let (audio_send, audio_recv) = flume::bounded(samples * 20 + prebuffering);
@@ -344,7 +343,7 @@ impl Record {
         let rt = Runtime::new().unwrap();
 
         // 20ms frames
-        let samples = self.codec.codec.samples(audio);
+        let samples = audio.samples(20);
 
         // The channel to share samples between the codec and the audio device
         let (audio_send, audio_recv) = flume::bounded(samples * 20);
@@ -365,62 +364,51 @@ impl Record {
         let audio_stream = audio.input(input_cb)?;
 
         let mut encs = Vec::new();
-        let mut recvs = Vec::new();
+        let mut sends = Vec::new();
 
         for codec in self.codec.iter() {
             let enc = codec.encoder(&audio)?;
-            let (send, recv) = flume::bounded::<Bytes>(4);
+            let (send, recv) = flume::bounded::<i16>(samples * 20);
+            let codec_samples = codec.codec.samples(&audio);
 
-            encs.push((enc, send));
-            recvs.push(recv);
+            encs.push((enc, recv, codec_samples));
+            sends.push(send);
         }
 
         audio_stream.play()?;
 
-        std::thread::spawn(move || {
-            let mut buf = vec![0i16; samples];
-            let mut out = [0u8; MAX_PACKET];
-            let mut fell_behind = false;
-            let mut print = 0u32;
-            loop {
-                for sample in buf.iter_mut() {
-                    *sample = match audio_recv.recv().ok() {
-                        Some(s) => s,
-                        None => {
-                            fell_behind = true;
-                            0
-                        }
-                    }
-                }
-
-                if fell_behind {
-                    warn!("Input stream fell behind!!");
-                    fell_behind = false;
-                }
-                debug!("Copied samples {} left in the queue", audio_recv.len());
-                for (ref mut enc, net_send) in encs.iter_mut() {
-                    match enc.encode(&buf, &mut out) {
-                        Ok(size) => {
-                            if print % 25 == 0 {
-                                info!("Encoded {} to {}", buf.len(), size);
-                            }
-                            print = print.wrapping_add(1);
-                            let bytes = Bytes::copy_from_slice(&out[..size]);
-                            if net_send.send(bytes).is_err() {
-                                warn!("Cannot send to the channel");
-                            }
-                        }
-                        Err(err) => warn!("Error encoding {}", err),
-                    }
+        std::thread::spawn(move || loop {
+            if let Ok(s) = audio_recv.recv() {
+                for send in sends.iter() {
+                    send.send(s).unwrap();
                 }
             }
         });
 
-        async fn udp_output(e: &EndPoint, recv: &Receiver<Bytes>) -> anyhow::Result<()> {
+        async fn udp_output(
+            e: &EndPoint,
+            enc: &mut dyn Encoder,
+            recv: &Receiver<i16>,
+            samples: usize,
+        ) -> anyhow::Result<()> {
+            let mut print = 0u32;
             let addr = e.addr;
             let (sink, _stream) = output_endpoint(&e)?.split();
 
-            let read = recv.stream().map(move |msg| Ok((msg, addr)));
+            let read = recv.stream().chunks(samples).map(move |buf| {
+                let mut out = [0u8; MAX_PACKET];
+                match enc.encode(&buf, &mut out) {
+                    Ok(size) => {
+                        if print % 25 == 0 {
+                            info!("Encoded {} to {}", buf.len(), size);
+                        }
+                        print = print.wrapping_add(1);
+                        let bytes = Bytes::copy_from_slice(&out[..size]);
+                        Ok((bytes, addr))
+                    }
+                    Err(_err) => Err(std::io::ErrorKind::InvalidData.into()),
+                }
+            });
 
             read.forward(sink).await?;
 
@@ -430,12 +418,13 @@ impl Record {
         let outputs = self.output.clone();
 
         rt.block_on(async move {
-            futures::future::join_all(
-                recvs
-                    .into_iter()
-                    .zip(outputs)
-                    .map(|(recv, out)| tokio::spawn(async move { udp_output(&out, &recv).await })),
-            )
+            futures::future::join_all(encs.into_iter().zip(outputs).map(
+                |((mut enc, recv, samples), out)| {
+                    tokio::spawn(
+                        async move { udp_output(&out, enc.as_mut(), &recv, samples).await },
+                    )
+                },
+            ))
             .await
         })
         .into_iter()
