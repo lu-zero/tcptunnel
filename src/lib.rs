@@ -131,7 +131,7 @@ pub fn to_endpoint(s: &str) -> Result<EndPoint> {
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EndPoint {
     /// UDP multicast interface address (IPv4 only)
     pub multicast_interface_address: Option<Ipv4Addr>,
