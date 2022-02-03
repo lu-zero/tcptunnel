@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -38,19 +39,19 @@ impl Codec {
 #[derive(Debug, Args)]
 struct AudioOpt {
     /// The input or output audio device to use
-    #[clap(long, short, default_value = "default")]
+    #[clap(long, short, default_value = "default", global = true)]
     audio_device: String,
 
     /// The audio sample rate
-    #[clap(long, short, default_value = "48000")]
+    #[clap(long, short, default_value = "48000", global = true)]
     sample_rate: u32,
 
     /// The number of audio channels
-    #[clap(long, short, default_value = "1")]
+    #[clap(long, short, default_value = "1", global = true)]
     channels: u16,
 
     /// The size of the audio buffer in use in samples
-    #[clap(long, short, default_value = "500")]
+    #[clap(long, short, default_value = "500", global = true)]
     buffer: u32,
 }
 
@@ -105,38 +106,68 @@ impl AudioOpt {
     }
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug)]
 struct EncoderOpt {
     /// Select a codec
-    #[clap(long, default_value = "opus", arg_enum)]
     codec: Codec,
 
     /// Use cbr (by default vbr is used when available)
-    #[clap(long)]
     cbr: bool,
 
     /// Set the target bitrate
-    #[clap(long)]
-    bitrate: Option<i32>,
+    bitrate: i32,
+}
+
+impl std::str::FromStr for EncoderOpt {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let u = url::Url::parse("codec:/")?.join(s)?;
+
+        let codec = Codec::from_str(
+            &u.path_segments()
+                .ok_or_else(|| anyhow!("Unexpected codec path"))?
+                .next()
+                .ok_or_else(|| anyhow!("empty codec"))?,
+            true,
+        )
+        .map_err(anyhow::Error::msg)?;
+
+        let query = u.query_pairs().collect::<HashMap<_, _>>();
+
+        let cbr = query.get("cbr").is_some();
+        let bitrate = query.get("bitrate").map(|v| v.parse()).unwrap_or(Ok(0))?;
+
+        Ok(EncoderOpt {
+            codec,
+            cbr,
+            bitrate,
+        })
+    }
 }
 
 impl EncoderOpt {
     fn encoder(&self, audio: &AudioOpt) -> Result<Box<dyn Encoder>> {
-        let enc = match self.codec {
+        let codec = &self.codec;
+        let cbr = self.cbr;
+        let bitrate = self.bitrate;
+
+        let enc = match codec {
             Codec::Opus => {
                 let mut enc = audiopus::coder::Encoder::new(
                     SampleRate::try_from(audio.sample_rate.try_into()?)?,
                     Channels::try_from(audio.channels.try_into()?)?,
                     audiopus::Application::Audio,
                 )?;
-                enc.set_vbr(!self.cbr)?;
-                if let Some(bitrate) = self.bitrate {
+                enc.set_vbr(!cbr)?;
+                if bitrate > 0 {
                     enc.set_bitrate(audiopus::Bitrate::BitsPerSecond(bitrate))?;
                 }
                 Box::new(enc) as Box<dyn Encoder>
             }
             Codec::Pcm => Box::new(Pcm()) as Box<dyn Encoder>,
         };
+
         Ok(enc)
     }
 }
@@ -293,15 +324,23 @@ struct Record {
     /// multicast_ttl=<u32> (IPv4-only)
     /// multicast_hops=<u32> (IPv6-only)
     /// buffer=<usize>
-    #[clap(long, short, parse(try_from_str = to_endpoint))]
-    output: EndPoint,
+    #[clap(long, short, parse(try_from_str = to_endpoint), required = true)]
+    output: Vec<EndPoint>,
 
-    #[clap(flatten)]
-    codec: EncoderOpt,
+    /// Codec to use, codec-specific-options encoded as url query
+    /// It supports
+    /// bitrate=<u32>
+    /// cbr
+    #[clap(long, parse(try_from_str), default_value = "opus")]
+    codec: Vec<EncoderOpt>,
 }
 
 impl Record {
     fn run(&self, audio: &AudioOpt) -> Result<()> {
+        if self.codec.len() != self.output.len() && self.output.len() > 1 {
+            anyhow::bail!("multiple outputs requires to specify a codec for each");
+        }
+
         let rt = Runtime::new().unwrap();
 
         // 20ms frames
@@ -309,8 +348,6 @@ impl Record {
 
         // The channel to share samples between the codec and the audio device
         let (audio_send, audio_recv) = flume::bounded(samples * 20);
-        // The channel to share packets between the codec and the network
-        let (net_send, net_recv) = flume::bounded::<Bytes>(4);
 
         let input_cb = move |data: &[i16], _: &cpal::InputCallbackInfo| {
             let mut fell_behind = false;
@@ -327,7 +364,16 @@ impl Record {
 
         let audio_stream = audio.input(input_cb)?;
 
-        let mut enc = self.codec.encoder(&audio)?;
+        let mut encs = Vec::new();
+        let mut recvs = Vec::new();
+
+        for codec in self.codec.iter() {
+            let enc = codec.encoder(&audio)?;
+            let (send, recv) = flume::bounded::<Bytes>(4);
+
+            encs.push((enc, send));
+            recvs.push(recv);
+        }
 
         audio_stream.play()?;
 
@@ -352,18 +398,20 @@ impl Record {
                     fell_behind = false;
                 }
                 debug!("Copied samples {} left in the queue", audio_recv.len());
-                match enc.encode(&buf, &mut out) {
-                    Ok(size) => {
-                        if print % 25 == 0 {
-                            info!("Encoded {} to {}", buf.len(), size);
+                for (ref mut enc, net_send) in encs.iter_mut() {
+                    match enc.encode(&buf, &mut out) {
+                        Ok(size) => {
+                            if print % 25 == 0 {
+                                info!("Encoded {} to {}", buf.len(), size);
+                            }
+                            print = print.wrapping_add(1);
+                            let bytes = Bytes::copy_from_slice(&out[..size]);
+                            if net_send.send(bytes).is_err() {
+                                warn!("Cannot send to the channel");
+                            }
                         }
-                        print = print.wrapping_add(1);
-                        let bytes = Bytes::copy_from_slice(&out[..size]);
-                        if net_send.send(bytes).is_err() {
-                            warn!("Cannot send to the channel");
-                        }
+                        Err(err) => warn!("Error encoding {}", err),
                     }
-                    Err(err) => warn!("Error encoding {}", err),
                 }
             }
         });
@@ -379,7 +427,20 @@ impl Record {
             Ok(())
         }
 
-        rt.block_on(async move { udp_output(&self.output, &net_recv).await })?;
+        let outputs = self.output.clone();
+
+        rt.block_on(async move {
+            futures::future::join_all(
+                recvs
+                    .into_iter()
+                    .zip(outputs)
+                    .map(|(recv, out)| tokio::spawn(async move { udp_output(&out, &recv).await })),
+            )
+            .await
+        })
+        .into_iter()
+        .map(|r| r.unwrap_or_else(|_| Err(anyhow!("Join failed"))))
+        .collect::<Result<_>>()?;
 
         Ok(())
     }
