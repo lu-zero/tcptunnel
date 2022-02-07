@@ -39,19 +39,19 @@ impl Codec {
 #[derive(Debug, Args)]
 struct AudioOpt {
     /// The input or output audio device to use
-    #[clap(long, short, default_value = "default")]
+    #[clap(long, short, default_value = "default", global = true)]
     audio_device: String,
 
     /// The audio sample rate
-    #[clap(long, short, default_value = "48000")]
+    #[clap(long, short, default_value = "48000", global = true)]
     sample_rate: u32,
 
     /// The number of audio channels
-    #[clap(long, short, default_value = "1")]
+    #[clap(long, short, default_value = "1", global = true)]
     channels: u16,
 
     /// The size of the audio buffer in use in samples
-    #[clap(long, short, default_value = "500")]
+    #[clap(long, short, default_value = "500", global = true)]
     buffer: u32,
 }
 
