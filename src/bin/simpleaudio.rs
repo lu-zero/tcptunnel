@@ -1,5 +1,6 @@
 use std::convert::TryInto;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use audiopus::{Channels, SampleRate, TryFrom};
@@ -308,7 +309,7 @@ impl Record {
         let samples = self.codec.codec.samples(audio);
 
         // The channel to share samples between the codec and the audio device
-        let (audio_send, audio_recv) = flume::bounded(samples * 20);
+        let (mut audio_send, mut audio_recv) = ringbuf::RingBuffer::new(samples * 20).split();
         // The channel to share packets between the codec and the network
         let (net_send, net_recv) = flume::bounded::<Bytes>(4);
 
@@ -316,7 +317,7 @@ impl Record {
             let mut fell_behind = false;
             debug!("Sending audio buffer of {}", data.len());
             for &sample in data {
-                if audio_send.try_send(sample).is_err() {
+                if audio_send.push(sample).is_err() {
                     fell_behind = true;
                 }
             }
@@ -334,23 +335,22 @@ impl Record {
         std::thread::spawn(move || {
             let mut buf = vec![0i16; samples];
             let mut out = [0u8; MAX_PACKET];
-            let mut fell_behind = false;
             let mut print = 0u32;
             loop {
                 for sample in buf.iter_mut() {
-                    *sample = match audio_recv.recv().ok() {
-                        Some(s) => s,
-                        None => {
-                            fell_behind = true;
-                            0
+                    loop {
+                        match audio_recv.pop() {
+                            Some(s) => {
+                                *sample = s;
+                                break;
+                            }
+                            None => {
+                                std::thread::sleep(Duration::from_millis(1));
+                            }
                         }
                     }
                 }
 
-                if fell_behind {
-                    warn!("Input stream fell behind!!");
-                    fell_behind = false;
-                }
                 debug!("Copied samples {} left in the queue", audio_recv.len());
                 match enc.encode(&buf, &mut out) {
                     Ok(size) => {
