@@ -12,6 +12,7 @@ use cpal::Device;
 use flume::{Receiver, Sender};
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::TryFutureExt;
+use ringbuf::RingBuffer;
 use tokio::runtime::Runtime;
 use tokio_util::codec::BytesCodec;
 use tokio_util::udp::UdpFramed;
@@ -225,19 +226,19 @@ impl Playback {
         let prebuffering = audio.samples(self.prebuffering);
 
         // The channel to share samples between the codec and the audio device
-        let (audio_send, audio_recv) = flume::bounded(samples * 20 + prebuffering);
+        let (mut audio_send, mut audio_recv) = RingBuffer::new(samples * 20 + prebuffering).split();
         // The channel to share packets between the codec and the network
         let (net_send, net_recv) = flume::bounded::<Bytes>(4);
 
         for _ in 0..prebuffering {
-            let _ = audio_send.send(0);
+            let _ = audio_send.push(0);
         }
 
         let output_cb = move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
             let mut input_fell_behind = false;
             debug!("Writing audio data in a {} buffer", data.len());
             for sample in data {
-                *sample = match audio_recv.try_recv().ok() {
+                *sample = match audio_recv.pop() {
                     Some(s) => s,
                     None => {
                         input_fell_behind = true;
@@ -274,7 +275,7 @@ impl Playback {
                         }
                         print = print.wrapping_add(1);
                         for &sample in buf.iter() {
-                            if audio_send.try_send(sample).is_err() {
+                            if audio_send.push(sample).is_err() {
                                 fell_behind = true;
                             }
                         }
@@ -347,7 +348,7 @@ impl Record {
         let samples = audio.samples(20);
 
         // The channel to share samples between the codec and the audio device
-        let (mut audio_send, mut audio_recv) = ringbuf::RingBuffer::new(samples * 20).split();
+        let (mut audio_send, mut audio_recv) = RingBuffer::new(samples * 20).split();
 
         let input_cb = move |data: &[i16], _: &cpal::InputCallbackInfo| {
             let mut fell_behind = false;
