@@ -12,6 +12,7 @@ use clap::Parser;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 #[derive(Debug, Parser)]
+#[clap(name = "udpcopy")]
 struct Opt {
     /// Input source url
     /// It supports the following query parameters

@@ -21,6 +21,7 @@ use tcptunnel::{to_endpoint, EndPoint};
 
 /// Bound multiple udp/rtp input to a single output
 #[derive(Debug, Parser)]
+#[clap(name = "rtpbound")]
 struct Opt {
     /// Input source url
     /// It supports the following query parameters

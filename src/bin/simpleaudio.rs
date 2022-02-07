@@ -396,6 +396,7 @@ enum Cmd {
 /// Capture from an audio device and stream to udp or
 /// listen to udp and output to an audio device
 #[derive(Debug, Parser)]
+#[clap(name = "simpleaudio")]
 struct Opt {
     #[clap(flatten)]
     audio: AudioOpt,

@@ -217,6 +217,7 @@ fn to_socket_addr(s: &str) -> Result<SocketAddr> {
 }
 
 #[derive(Debug, Parser)]
+#[clap(name = "tcptunnel")]
 struct Opt {
     /// UDP multicast interface address (IPv4 only)
     #[clap(short = 'a', long, name = "MCAST_INTERFACE_ADDR")]
