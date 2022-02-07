@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use audiopus::{Channels, SampleRate, TryFrom};
@@ -346,13 +347,13 @@ impl Record {
         let samples = audio.samples(20);
 
         // The channel to share samples between the codec and the audio device
-        let (audio_send, audio_recv) = flume::bounded(samples * 20);
+        let (mut audio_send, mut audio_recv) = ringbuf::RingBuffer::new(samples * 20).split();
 
         let input_cb = move |data: &[i16], _: &cpal::InputCallbackInfo| {
             let mut fell_behind = false;
             debug!("Sending audio buffer of {}", data.len());
             for &sample in data {
-                if audio_send.try_send(sample).is_err() {
+                if audio_send.push(sample).is_err() {
                     fell_behind = true;
                 }
             }
@@ -378,10 +379,12 @@ impl Record {
         audio_stream.play()?;
 
         std::thread::spawn(move || loop {
-            if let Ok(s) = audio_recv.recv() {
+            if let Some(s) = audio_recv.pop() {
                 for send in sends.iter() {
                     send.send(s).unwrap();
                 }
+            } else {
+                std::thread::sleep(Duration::from_millis(1));
             }
         });
 
