@@ -213,7 +213,7 @@ struct Playback {
     codec: DecoderOpt,
 
     /// Prebuffering
-    #[clap(long, default_value = "0")]
+    #[clap(long, default_value = "25")]
     prebuffering: usize,
 }
 
