@@ -8,6 +8,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use futures::{stream, SinkExt, StreamExt, TryFutureExt, TryStreamExt};
 // use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use clap::Parser;
+use priority_queue::DoublePriorityQueue;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
@@ -177,12 +178,30 @@ async fn main() -> Result<()> {
 
     tokio::spawn(async move {
         let mut seen = VecDeque::with_capacity(lookbehind);
+        let mut buf = DoublePriorityQueue::with_capacity(lookbehind);
+        let mut index = 0;
         stream::select_all(inputs.iter_mut())
-            .for_each(|mut msg| {
+            .for_each(move |mut msg| {
                 if strip_input_header {
                     let key = msg.get_u64();
                     if !seen.contains(&key) {
-                        tx.send(msg).unwrap();
+                        if index < key {
+                            let _ = buf.push(msg, key);
+                            if buf.len() == lookbehind {
+                                // Set the index to the last packet in the queue
+                                index = *buf.peek_max().unwrap().1 + 1;
+                                while let Some((prev, _)) = buf.pop_min() {
+                                    tx.send(prev).unwrap();
+                                }
+                            }
+                        } else {
+                            // Packet loss or in-order
+                            while let Some((prev, _)) = buf.pop_min() {
+                                tx.send(prev).unwrap();
+                            }
+                            index = key + 1;
+                            tx.send(msg).unwrap();
+                        }
                         if seen.len() == lookbehind {
                             let _ = seen.pop_front();
                         }
