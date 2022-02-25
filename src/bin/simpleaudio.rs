@@ -533,6 +533,7 @@ fn main() -> Result<()> {
 
     tracing_subscriber::fmt()
         .with_env_filter(filter_layer)
+        .with_writer(std::io::stderr)
         .init();
 
     match opt.command {
