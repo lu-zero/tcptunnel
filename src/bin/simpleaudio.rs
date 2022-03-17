@@ -36,6 +36,16 @@ impl Codec {
     }
 }
 
+fn dbfs(v: i16) -> f32 {
+    let v = if v == 0 {
+        0.0
+    } else {
+        20.0 * (v.abs() as f32).log10()
+    };
+
+    v - 90.31
+}
+
 #[derive(Debug, Args)]
 struct AudioOpt {
     /// The input or output audio device to use
@@ -224,6 +234,8 @@ impl Playback {
 
         let mut dec = self.codec.decoder(&audio)?;
 
+        let channels = audio.channels;
+
         std::thread::spawn(move || {
             let mut buf = vec![0i16; samples];
             let mut fell_behind = false;
@@ -235,11 +247,18 @@ impl Playback {
                     Ok(size) => {
                         if print % 25u32 == 0 {
                             info!(
-                                "Decoded {}/{} from {} capacity {}",
+                                "Decoded {}/{} from {} capacity {} {}",
                                 buf.len(),
                                 size,
                                 packet.len(),
-                                audio_send.len()
+                                audio_send.len(),
+                                if channels == 1 {
+                                    format!("dbfs {:.3}", dbfs(buf[0]))
+                                } else {
+                                    let r = buf[0];
+                                    let l = buf[1];
+                                    format!("dbfs {:.3} {:.3}", dbfs(r), dbfs(l))
+                                }
                             );
                         }
                         print = print.wrapping_add(1);
@@ -332,6 +351,7 @@ impl Record {
 
         audio_stream.play()?;
 
+        let channels = audio.channels;
         std::thread::spawn(move || {
             let mut buf = vec![0i16; samples];
             let mut out = [0u8; MAX_PACKET];
@@ -355,7 +375,18 @@ impl Record {
                 match enc.encode(&buf, &mut out) {
                     Ok(size) => {
                         if print % 25 == 0 {
-                            info!("Encoded {} to {}", buf.len(), size);
+                            info!(
+                                "Encoded {} to {} {}",
+                                buf.len(),
+                                size,
+                                if channels == 1 {
+                                    format!("dbfs {:.3}", dbfs(buf[0]))
+                                } else {
+                                    let r = buf[0];
+                                    let l = buf[1];
+                                    format!("dbfs {:.3} {:.3}", dbfs(r), dbfs(l))
+                                }
+                            );
                         }
                         print = print.wrapping_add(1);
                         let bytes = Bytes::copy_from_slice(&out[..size]);
