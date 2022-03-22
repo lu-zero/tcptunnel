@@ -19,7 +19,7 @@ rtp = "0.6"
 webrtc-util = "0.5"
 indicatif = "0.16"
 tracing = "0.1"
-tracing-subscriber = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-futures = "0.2.5"
 audiopus = "0.2"
 cpal = "0.13"
