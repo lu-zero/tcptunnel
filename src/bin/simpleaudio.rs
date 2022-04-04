@@ -63,6 +63,10 @@ struct AudioOpt {
     /// The size of the audio buffer in use in samples
     #[clap(long, short, default_value = "500", global = true)]
     buffer: u32,
+
+    /// Bind the audio thread to a specific core
+    #[clap(long, short = 'p', global = true)]
+    cpu: Option<usize>,
 }
 
 impl AudioOpt {
@@ -116,6 +120,55 @@ impl AudioOpt {
     }
 }
 
+#[cfg(target_os = "linux")]
+mod affinity {
+    use nix::sched::{sched_getaffinity, sched_setaffinity, CpuSet};
+    use nix::unistd::Pid;
+
+    pub struct Affinity {
+        normal: CpuSet,
+        audio: CpuSet,
+    }
+
+    impl Affinity {
+        pub fn new(core: Option<usize>) -> anyhow::Result<Affinity> {
+            let mut normal = sched_getaffinity(Pid::from_raw(0))?;
+            let mut audio = CpuSet::new();
+            if let Some(core) = core {
+                normal.unset(core)?;
+                audio.set(core)?;
+            }
+
+            Ok(Affinity { normal, audio })
+        }
+        /// Set the core affinity for the audio threads
+        pub fn audio_affinity(&self) {
+            let _ = sched_setaffinity(Pid::from_raw(0), &self.audio);
+        }
+
+        /// Set the core affinity for the network and encoder threads
+        pub fn normal_affinity(&self) {
+            let _ = sched_setaffinity(Pid::from_raw(0), &self.normal);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+mod affinity {
+    pub struct Affinity {}
+    impl Affinity {
+        pub fn new(_: Option<usize>) -> anyhow::Result<Affinity> {
+            Ok(Affinity {})
+        }
+        /// Set the core affinity for the audio threads
+        pub fn audio_affinity(&self) {}
+
+        /// Set the core affinity for the network and encoder threads
+        pub fn normal_affinity(&self) {}
+    }
+}
+
+use affinity::Affinity;
 #[derive(Debug, Args)]
 struct EncoderOpt {
     /// Select a codec
@@ -198,6 +251,9 @@ struct Playback {
 
 impl Playback {
     fn run(self, audio: &AudioOpt) -> Result<()> {
+        let af = Affinity::new(audio.cpu)?;
+
+        af.normal_affinity();
         let rt = Runtime::new().unwrap();
 
         // 20ms frames
@@ -229,8 +285,6 @@ impl Playback {
                 warn!("decoding fell behind!!");
             }
         };
-
-        let audio_stream = audio.output(output_cb)?;
 
         let mut dec = self.codec.decoder(&audio)?;
 
@@ -297,6 +351,8 @@ impl Playback {
             Ok(())
         }
 
+        af.audio_affinity();
+        let audio_stream = audio.output(output_cb)?;
         audio_stream.play()?;
 
         rt.block_on(async move { udp_input(&self.input, &net_send).await })?;
@@ -322,6 +378,9 @@ struct Record {
 
 impl Record {
     fn run(&self, audio: &AudioOpt) -> Result<()> {
+        let af = Affinity::new(audio.cpu)?;
+        af.normal_affinity();
+
         let rt = Runtime::new().unwrap();
 
         // 20ms frames
@@ -345,11 +404,7 @@ impl Record {
             }
         };
 
-        let audio_stream = audio.input(input_cb)?;
-
         let mut enc = self.codec.encoder(&audio)?;
-
-        audio_stream.play()?;
 
         let channels = audio.channels;
         std::thread::spawn(move || {
@@ -409,6 +464,10 @@ impl Record {
 
             Ok(())
         }
+
+        af.audio_affinity();
+        let audio_stream = audio.input(input_cb)?;
+        audio_stream.play()?;
 
         rt.block_on(async move { udp_output(&self.output, &net_recv).await })?;
 
