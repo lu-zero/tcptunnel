@@ -301,10 +301,11 @@ impl Playback {
                     Ok(size) => {
                         if print % 25u32 == 0 {
                             info!(
-                                "Decoded {}/{} from {} capacity {} {}",
+                                "Decoded {}/{} from {} pending to decode {} decoded pending {} {}",
                                 buf.len(),
                                 size,
                                 packet.len(),
+                                net_recv.len(),
                                 audio_send.len(),
                                 if channels == 1 {
                                     format!("dbfs {:.3}", dbfs(buf[0]))
