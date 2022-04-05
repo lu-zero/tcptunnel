@@ -9,6 +9,7 @@ use clap::{ArgEnum, Args, Parser, Subcommand};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Device;
 use flume::{Receiver, Sender};
+use futures::future::ready;
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::TryFutureExt;
 use tokio::runtime::Runtime;
@@ -263,7 +264,7 @@ impl Playback {
         // The channel to share samples between the codec and the audio device
         let (audio_send, audio_recv) = flume::bounded(samples * 20 + prebuffering);
         // The channel to share packets between the codec and the network
-        let (net_send, net_recv) = flume::bounded::<Bytes>(4);
+        //        let (net_send, net_recv) = flume::bounded::<Bytes>(4);
 
         for _ in 0..prebuffering {
             let _ = audio_send.send(0);
@@ -290,50 +291,17 @@ impl Playback {
 
         let channels = audio.channels;
 
-        std::thread::spawn(move || {
+        async fn udp_input(
+            e: &EndPoint,
+            audio_send: &Sender<i16>,
+            dec: &mut dyn Decoder,
+            channels: u16,
+            samples: usize,
+        ) -> anyhow::Result<()> {
             let mut buf = vec![0i16; samples];
             let mut fell_behind = false;
             let mut print = 0;
-            for packet in net_recv.iter() {
-                let packet = packet.as_ref();
-                debug!("Received packet of {}", packet.len());
-                match dec.decode(packet, &mut buf) {
-                    Ok(size) => {
-                        if print % 25u32 == 0 {
-                            info!(
-                                "Decoded {}/{} from {} pending to decode {} decoded pending {} {}",
-                                buf.len(),
-                                size,
-                                packet.len(),
-                                net_recv.len(),
-                                audio_send.len(),
-                                if channels == 1 {
-                                    format!("dbfs {:.3}", dbfs(buf[0]))
-                                } else {
-                                    let r = buf[0];
-                                    let l = buf[1];
-                                    format!("dbfs {:.3} {:.3}", dbfs(r), dbfs(l))
-                                }
-                            );
-                        }
-                        print = print.wrapping_add(1);
-                        for &sample in buf.iter() {
-                            if audio_send.try_send(sample).is_err() {
-                                fell_behind = true;
-                            }
-                        }
 
-                        if fell_behind {
-                            warn!("Input stream fell behind!!");
-                            fell_behind = false;
-                        }
-                    }
-                    Err(err) => warn!("Error decoding {}", err),
-                }
-            }
-        });
-
-        async fn udp_input(e: &EndPoint, send: &Sender<Bytes>) -> anyhow::Result<()> {
             let (_sink, stream) = input_endpoint(&e)?.split();
 
             let map = stream
@@ -343,8 +311,42 @@ impl Playback {
                 })
                 .try_for_each(move |(msg, _addr)| {
                     debug!("Received from network {} data", msg.len());
-                    send.send_async(msg.freeze())
-                        .map_err(|e| anyhow::Error::new(e))
+
+                    let packet = msg.as_ref();
+                    match dec.decode(packet, &mut buf) {
+                        Ok(size) => {
+                            if print % 25u32 == 0 {
+                                info!(
+                                    "Decoded {}/{} from {} decoded pending {} {}",
+                                    buf.len(),
+                                    size,
+                                    packet.len(),
+                                    audio_send.len(),
+                                    if channels == 1 {
+                                        format!("dbfs {:.3}", dbfs(buf[0]))
+                                    } else {
+                                        let r = buf[0];
+                                        let l = buf[1];
+                                        format!("dbfs {:.3} {:.3}", dbfs(r), dbfs(l))
+                                    }
+                                );
+                            }
+                            print = print.wrapping_add(1);
+                            for &sample in buf.iter() {
+                                if audio_send.try_send(sample).is_err() {
+                                    fell_behind = true;
+                                }
+                            }
+
+                            if fell_behind {
+                                warn!("Input stream fell behind!!");
+                                fell_behind = false;
+                            }
+                        }
+                        Err(err) => warn!("Error decoding {}", err),
+                    }
+
+                    ready(Ok(()))
                 });
 
             map.await?;
@@ -356,7 +358,9 @@ impl Playback {
         let audio_stream = audio.output(output_cb)?;
         audio_stream.play()?;
 
-        rt.block_on(async move { udp_input(&self.input, &net_send).await })?;
+        rt.block_on(async move {
+            udp_input(&self.input, &audio_send, dec.as_mut(), channels, samples).await
+        })?;
 
         Ok(())
     }
