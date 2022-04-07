@@ -67,6 +67,10 @@ struct AudioOpt {
     /// Bind the audio thread to a specific core
     #[clap(long, short = 'p', global = true)]
     cpu: Option<usize>,
+
+    /// size of the feeding buffer in ms
+    #[clap(long, default_value = "40", global = true)]
+    feeding_buffer: usize,
 }
 
 impl AudioOpt {
@@ -115,7 +119,7 @@ impl AudioOpt {
     }
 
     /// Amount of samples from ms
-    fn prebuffering(&self, ms_prebuffering: usize) -> usize {
+    fn samples_from_ms(&self, ms_prebuffering: usize) -> usize {
         self.sample_rate as usize * ms_prebuffering * self.channels as usize / 1000
     }
 }
@@ -256,13 +260,14 @@ impl Playback {
         af.normal_affinity();
         let rt = Runtime::new().unwrap();
 
-        // 20ms frames
+        // 20ms frames for opus, 7ms for PCM
         let samples = self.codec.codec.samples(audio);
-        let prebuffering = audio.prebuffering(self.prebuffering);
+        let prebuffering = audio.samples_from_ms(self.prebuffering);
+        let feeding_buffer = audio.samples_from_ms(audio.feeding_buffer);
 
         // The channel to share samples between the codec and the audio device
         let (mut audio_send, mut audio_recv) =
-            ringbuf::RingBuffer::new(samples * 20 + prebuffering).split();
+            ringbuf::RingBuffer::new(feeding_buffer + prebuffering).split();
 
         for _ in 0..prebuffering {
             let _ = audio_send.push(0);
@@ -393,11 +398,12 @@ impl Record {
 
         let rt = Runtime::new().unwrap();
 
-        // 20ms frames
+        // 20ms frames for opus, 7ms for PCM
         let samples = self.codec.codec.samples(audio);
+        let feeding_buffer = audio.samples_from_ms(audio.feeding_buffer);
 
         // The channel to share samples between the codec and the audio device
-        let (mut audio_send, mut audio_recv) = ringbuf::RingBuffer::new(samples * 20).split();
+        let (mut audio_send, mut audio_recv) = ringbuf::RingBuffer::new(feeding_buffer).split();
         // The channel to share packets between the codec and the network
         let (net_send, net_recv) = flume::bounded::<Bytes>(4);
 
