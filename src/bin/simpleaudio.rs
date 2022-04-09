@@ -11,7 +11,7 @@ use cpal::Device;
 use flume::Receiver;
 use futures::future::ready;
 use futures::stream::{StreamExt, TryStreamExt};
-use tokio::runtime::Runtime;
+use tokio::runtime::{Builder, Runtime};
 use tokio_util::codec::BytesCodec;
 use tokio_util::udp::UdpFramed;
 
@@ -257,9 +257,6 @@ impl Playback {
     fn run(self, audio: &AudioOpt) -> Result<()> {
         let af = Affinity::new(audio.cpu)?;
 
-        af.normal_affinity();
-        let rt = Runtime::new().unwrap();
-
         // 20ms frames for opus, 7ms for PCM
         let samples = self.codec.codec.samples(audio);
         let prebuffering = audio.samples_from_ms(self.prebuffering);
@@ -360,6 +357,9 @@ impl Playback {
         af.audio_affinity();
         let audio_stream = audio.output(output_cb)?;
         audio_stream.play()?;
+
+        af.normal_affinity();
+        let rt = Builder::new_current_thread().enable_io().build()?;
 
         rt.block_on(async move {
             udp_input(
