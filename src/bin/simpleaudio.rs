@@ -11,7 +11,7 @@ use cpal::Device;
 use flume::Receiver;
 use futures::future::ready;
 use futures::stream::{StreamExt, TryStreamExt};
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::Builder;
 use tokio_util::codec::BytesCodec;
 use tokio_util::udp::UdpFramed;
 
@@ -396,8 +396,6 @@ impl Record {
         let af = Affinity::new(audio.cpu)?;
         af.normal_affinity();
 
-        let rt = Runtime::new().unwrap();
-
         // 20ms frames for opus, 7ms for PCM
         let samples = self.codec.codec.samples(audio);
         let feeding_buffer = audio.samples_from_ms(audio.feeding_buffer);
@@ -423,52 +421,54 @@ impl Record {
         let mut enc = self.codec.encoder(&audio)?;
 
         let channels = audio.channels;
-        std::thread::spawn(move || {
-            let mut buf = vec![0i16; samples];
-            let mut out = [0u8; MAX_PACKET];
-            let mut print = 0u32;
-            loop {
-                for sample in buf.iter_mut() {
-                    loop {
-                        match audio_recv.pop() {
-                            Some(s) => {
-                                *sample = s;
-                                break;
-                            }
-                            None => {
-                                std::thread::sleep(Duration::from_millis(1));
-                            }
-                        }
-                    }
-                }
-
-                debug!("Copied samples {} left in the queue", audio_recv.len());
-                match enc.encode(&buf, &mut out) {
-                    Ok(size) => {
-                        if print % 25 == 0 {
-                            info!(
-                                "Encoded {} to {} {}",
-                                buf.len(),
-                                size,
-                                if channels == 1 {
-                                    format!("dbfs {:.3}", dbfs(buf[0]))
-                                } else {
-                                    let r = buf[0];
-                                    let l = buf[1];
-                                    format!("dbfs {:.3} {:.3}", dbfs(r), dbfs(l))
+        let join_handle = std::thread::Builder::new()
+            .name("simple-audio-encoder".to_owned())
+            .spawn(move || {
+                let mut buf = vec![0i16; samples];
+                let mut out = [0u8; MAX_PACKET];
+                let mut print = 0u32;
+                loop {
+                    for sample in buf.iter_mut() {
+                        loop {
+                            match audio_recv.pop() {
+                                Some(s) => {
+                                    *sample = s;
+                                    break;
                                 }
-                            );
-                        }
-                        print = print.wrapping_add(1);
-                        let bytes = Bytes::copy_from_slice(&out[..size]);
-                        if net_send.send(bytes).is_err() {
-                            warn!("Cannot send to the channel");
+                                None => {
+                                    std::thread::sleep(Duration::from_millis(1));
+                                }
+                            }
                         }
                     }
-                    Err(err) => warn!("Error encoding {}", err),
+
+                    debug!("Copied samples {} left in the queue", audio_recv.len());
+                    match enc.encode(&buf, &mut out) {
+                        Ok(size) => {
+                            if print % 25 == 0 {
+                                info!(
+                                    "Encoded {} to {} {}",
+                                    buf.len(),
+                                    size,
+                                    if channels == 1 {
+                                        format!("dbfs {:.3}", dbfs(buf[0]))
+                                    } else {
+                                        let r = buf[0];
+                                        let l = buf[1];
+                                        format!("dbfs {:.3} {:.3}", dbfs(r), dbfs(l))
+                                    }
+                                );
+                            }
+                            print = print.wrapping_add(1);
+                            let bytes = Bytes::copy_from_slice(&out[..size]);
+                            if net_send.send(bytes).is_err() {
+                                warn!("Cannot send to the channel");
+                            }
+                        }
+                        Err(err) => warn!("Error encoding {}", err),
+                    }
                 }
-            }
-        });
+            })?;
 
         async fn udp_output(e: &EndPoint, recv: &Receiver<Bytes>) -> anyhow::Result<()> {
             let addr = e.addr;
@@ -485,7 +485,12 @@ impl Record {
         let audio_stream = audio.input(input_cb)?;
         audio_stream.play()?;
 
+        af.normal_affinity();
+        let rt = Builder::new_current_thread().enable_io().build()?;
+
         rt.block_on(async move { udp_output(&self.output, &net_recv).await })?;
+
+        join_handle.join().unwrap();
 
         Ok(())
     }
