@@ -11,6 +11,7 @@ use cpal::Device;
 use flume::Receiver;
 use futures::future::ready;
 use futures::stream::{StreamExt, TryStreamExt};
+use speexdsp::resampler::*;
 use tokio::runtime::Builder;
 use tokio_util::codec::BytesCodec;
 use tokio_util::udp::UdpFramed;
@@ -69,7 +70,7 @@ struct AudioOpt {
     cpu: Option<usize>,
 
     /// size of the feeding buffer in ms
-    #[clap(long, default_value = "40", global = true)]
+    #[clap(long, default_value = "80", global = true)]
     feeding_buffer: usize,
 }
 
@@ -121,6 +122,17 @@ impl AudioOpt {
     /// Amount of samples from ms
     fn samples_from_ms(&self, ms_prebuffering: usize) -> usize {
         self.sample_rate as usize * ms_prebuffering * self.channels as usize / 1000
+    }
+
+    /// Create an idempotent resampler
+    fn resampler(&self) -> Result<State> {
+        State::new(
+            self.channels as usize,
+            self.sample_rate as usize,
+            self.sample_rate as usize,
+            4,
+        )
+        .map_err(|_| anyhow!("Cannot setup the resampler"))
     }
 }
 
@@ -247,24 +259,28 @@ struct Playback {
 
     #[clap(flatten)]
     codec: DecoderOpt,
-
-    /// Prebuffering
-    #[clap(long, default_value = "0")]
-    prebuffering: usize,
 }
 
 impl Playback {
     fn run(self, audio: &AudioOpt) -> Result<()> {
         let af = Affinity::new(audio.cpu)?;
 
+        let st = audio.resampler()?;
+        let input_latency = st.get_input_latency();
+        let output_latency = st.get_output_latency();
+
+        info!(
+            "Resampler input latency {} output_latency {}",
+            input_latency, output_latency
+        );
+
         // 20ms frames for opus, 7ms for PCM
         let samples = self.codec.codec.samples(audio);
-        let prebuffering = audio.samples_from_ms(self.prebuffering);
         let feeding_buffer = audio.samples_from_ms(audio.feeding_buffer);
+        let prebuffering = feeding_buffer / 2;
 
         // The channel to share samples between the codec and the audio device
-        let (mut audio_send, mut audio_recv) =
-            ringbuf::RingBuffer::new(feeding_buffer + prebuffering).split();
+        let (mut audio_send, mut audio_recv) = ringbuf::RingBuffer::new(feeding_buffer).split();
 
         for _ in 0..prebuffering {
             let _ = audio_send.push(0);
@@ -295,12 +311,15 @@ impl Playback {
             e: &EndPoint,
             audio_send: &mut ringbuf::Producer<i16>,
             dec: &mut dyn Decoder,
+            mut st: State,
             channels: u16,
             samples: usize,
         ) -> anyhow::Result<()> {
             let mut buf = vec![0i16; samples];
+            let mut out_buf = vec![0i16; samples * 11 / 10]; // 10% more samples out at most
             let mut fell_behind = false;
             let mut print = 0;
+            let capacity = audio_send.capacity() as isize;
 
             let (_sink, stream) = input_endpoint(&e)?.split();
 
@@ -315,9 +334,37 @@ impl Playback {
                     let packet = msg.as_ref();
                     match dec.decode(packet, &mut buf) {
                         Ok(size) => {
+                            let buf_len = buf.len();
+                            let (consumed, written) = st
+                                .process_interleaved_int(&buf, &mut out_buf)
+                                .expect("Resampling failed");
+                            assert_eq!(consumed, buf_len); // It should be always true
+
+                            for &sample in &out_buf[..written] {
+                                if audio_send.push(sample).is_err() {
+                                    fell_behind = true;
+                                }
+                            }
+
+                            let water_level = audio_send.len() as isize;
+
+                            let (in_rate, _) = st.get_rate();
+
+                            let new_rate = in_rate as isize
+                                - (in_rate as isize * (water_level * 2 - capacity)
+                                    / capacity
+                                    / 100);
+
+                            st.set_rate(in_rate, new_rate as usize)
+                                .expect("Resampler error");
+
+                            if fell_behind {
+                                warn!("Input stream fell behind!!");
+                                fell_behind = false;
+                            }
                             if print % 25u32 == 0 {
                                 info!(
-                                    "Decoded {}/{} from {} decoded pending {} {}",
+                                    "Decoded {}/{} from {} decoded pending {} {} resampling {}/{}",
                                     buf.len(),
                                     size,
                                     packet.len(),
@@ -328,20 +375,12 @@ impl Playback {
                                         let r = buf[0];
                                         let l = buf[1];
                                         format!("dbfs {:.3} {:.3}", dbfs(r), dbfs(l))
-                                    }
+                                    },
+                                    in_rate,
+                                    new_rate
                                 );
                             }
                             print = print.wrapping_add(1);
-                            for &sample in buf.iter() {
-                                if audio_send.push(sample).is_err() {
-                                    fell_behind = true;
-                                }
-                            }
-
-                            if fell_behind {
-                                warn!("Input stream fell behind!!");
-                                fell_behind = false;
-                            }
                         }
                         Err(err) => warn!("Error decoding {}", err),
                     }
@@ -366,6 +405,7 @@ impl Playback {
                 &self.input,
                 &mut audio_send,
                 dec.as_mut(),
+                st,
                 channels,
                 samples,
             )
