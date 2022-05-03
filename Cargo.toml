@@ -27,3 +27,4 @@ flume = "0.10"
 ringbuf = "0.2.6"
 priority-queue = "1.2.1"
 nix = "0.23.1"
+speexdsp = { git = "https://github.com/rust-av/speexdsp-rs", branch = "interleaved" }
