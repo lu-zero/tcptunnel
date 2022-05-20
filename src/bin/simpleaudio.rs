@@ -50,8 +50,8 @@ fn dbfs(v: i16) -> f32 {
 #[derive(Debug, Args)]
 struct AudioOpt {
     /// The input or output audio device to use
-    #[clap(long, short, default_value = "default", global = true)]
-    audio_device: String,
+    #[clap(long, short, global = true)]
+    audio_device: Option<String>,
 
     /// The audio sample rate
     #[clap(long, short, default_value = "48000", global = true)]
@@ -79,7 +79,11 @@ impl AudioOpt {
     where
         F: FnMut(&[i16], &cpal::InputCallbackInfo) + Send + 'static,
     {
-        let device = input_device(&self.audio_device)?;
+        let device = input_device(
+            self.audio_device
+                .as_ref()
+                .expect("Capturing requires a device"),
+        )?;
         let config = device.default_input_config()?;
 
         info!("Buffer size {:?}", config.buffer_size());
@@ -101,22 +105,26 @@ impl AudioOpt {
     where
         F: FnMut(&mut [i16], &cpal::OutputCallbackInfo) + Send + 'static,
     {
-        let device = output_device(&self.audio_device)?;
-        let config = device.default_output_config()?;
+        if let Some(ref audio_device) = self.audio_device {
+            let device = output_device(audio_device)?;
+            let config = device.default_output_config()?;
 
-        info!("Buffer size {:?}", config.buffer_size());
+            info!("Buffer size {:?}", config.buffer_size());
 
-        let mut config: cpal::StreamConfig = config.into();
+            let mut config: cpal::StreamConfig = config.into();
 
-        config.sample_rate = cpal::SampleRate(self.sample_rate);
-        config.channels = self.channels;
-        config.buffer_size = cpal::BufferSize::Fixed(self.buffer);
+            config.sample_rate = cpal::SampleRate(self.sample_rate);
+            config.channels = self.channels;
+            config.buffer_size = cpal::BufferSize::Fixed(self.buffer);
 
-        info!("Audio configuration {:?}", config);
+            info!("Audio configuration {:?}", config);
 
-        let stream = device.build_output_stream(&config, cb, err_cb)?;
+            let stream = device.build_output_stream(&config, cb, err_cb)?;
 
-        Ok(stream)
+            Ok(stream)
+        } else {
+            unreachable!()
+        }
     }
 
     /// Amount of samples from ms
@@ -309,7 +317,7 @@ impl Playback {
 
         async fn udp_input(
             e: &EndPoint,
-            audio_send: &mut ringbuf::Producer<i16>,
+            mut audio_send: Option<&mut ringbuf::Producer<i16>>,
             dec: &mut dyn Decoder,
             mut st: State,
             channels: u16,
@@ -319,7 +327,6 @@ impl Playback {
             let mut out_buf = vec![0i16; samples * 11 / 10]; // 10% more samples out at most
             let mut fell_behind = false;
             let mut print = 0;
-            let capacity = audio_send.capacity() as isize;
 
             let (_sink, stream) = input_endpoint(&e)?.split();
 
@@ -335,40 +342,49 @@ impl Playback {
                     match dec.decode(packet, &mut buf) {
                         Ok(size) => {
                             let buf_len = buf.len();
-                            let (consumed, written) = st
-                                .process_interleaved_int(&buf, &mut out_buf)
-                                .expect("Resampling failed");
-                            assert_eq!(consumed, buf_len); // It should be always true
+                            let (water_level, in_rate, new_rate) =
+                                if let Some(ref mut audio_send) = audio_send {
+                                    let (consumed, written) = st
+                                        .process_interleaved_int(&buf, &mut out_buf)
+                                        .expect("Resampling failed");
+                                    assert_eq!(consumed, buf_len); // It should be always true
 
-                            for &sample in &out_buf[..written] {
-                                if audio_send.push(sample).is_err() {
-                                    fell_behind = true;
-                                }
-                            }
+                                    let capacity = audio_send.capacity() as isize;
 
-                            let water_level = audio_send.len() as isize;
+                                    for &sample in &out_buf[..written] {
+                                        if audio_send.push(sample).is_err() {
+                                            fell_behind = true;
+                                        }
+                                    }
 
-                            let (in_rate, _) = st.get_rate();
+                                    let water_level = audio_send.len() as isize;
 
-                            let new_rate = in_rate as isize
-                                - (in_rate as isize * (water_level * 2 - capacity)
-                                    / capacity
-                                    / 100);
+                                    let (in_rate, _) = st.get_rate();
 
-                            st.set_rate(in_rate, new_rate as usize)
-                                .expect("Resampler error");
+                                    let new_rate = in_rate as isize
+                                        - (in_rate as isize * (water_level * 2 - capacity)
+                                            / capacity
+                                            / 100);
 
-                            if fell_behind {
-                                warn!("Input stream fell behind!!");
-                                fell_behind = false;
-                            }
+                                    st.set_rate(in_rate, new_rate as usize)
+                                        .expect("Resampler error");
+
+                                    if fell_behind {
+                                        warn!("Input stream fell behind!!");
+                                        fell_behind = false;
+                                    }
+                                    (water_level, in_rate, new_rate)
+                                } else {
+                                    (0, 0, 0)
+                                };
+
                             if print % 25u32 == 0 {
                                 info!(
                                     "Decoded {}/{} from {} decoded pending {} {} resampling {}/{}",
                                     buf.len(),
                                     size,
                                     packet.len(),
-                                    audio_send.len(),
+                                    water_level,
                                     if channels == 1 {
                                         format!("dbfs {:.3}", dbfs(buf[0]))
                                     } else {
@@ -394,22 +410,20 @@ impl Playback {
         }
 
         af.audio_affinity();
-        let audio_stream = audio.output(output_cb)?;
-        audio_stream.play()?;
+        let _audio_stream = if audio.audio_device.is_some() {
+            let audio_stream = audio.output(output_cb)?;
+            audio_stream.play()?;
+            Some(audio_stream)
+        } else {
+            None
+        };
 
         af.normal_affinity();
         let rt = Builder::new_current_thread().enable_io().build()?;
 
         rt.block_on(async move {
-            udp_input(
-                &self.input,
-                &mut audio_send,
-                dec.as_mut(),
-                st,
-                channels,
-                samples,
-            )
-            .await
+            let audio_send = audio.audio_device.as_ref().map(|_| &mut audio_send);
+            udp_input(&self.input, audio_send, dec.as_mut(), st, channels, samples).await
         })?;
 
         Ok(())
