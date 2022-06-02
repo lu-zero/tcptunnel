@@ -38,4 +38,5 @@ $ rtpbound -i udp://localhost:12349?buffer=100000 -i udp://localhost:12347?buffe
 
 ## Notes
 
-Thanks to Edoardo Morandi for his help in debugging some async problems.
+- Thanks to Edoardo Morandi for his help in debugging some async problems.
+- The loudnorm module is imported from [gstreamer](https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/blob/main/audio/audiofx/src/audioloudnorm/imp.rs) and under [MPL-2](https://www.mozilla.org/en-US/MPL/2.0/).

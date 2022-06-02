@@ -6,6 +6,8 @@ use tokio::net::*;
 use tokio_util::codec::BytesCodec;
 use tokio_util::udp::UdpFramed;
 
+pub mod loudnorm;
+
 impl EndPoint {
     pub fn setup_udp(&self, localaddr: SocketAddr) -> Result<UdpSocket> {
         use socket2::*;
