@@ -325,10 +325,46 @@ impl Playback {
         ) -> anyhow::Result<()> {
             let mut buf = vec![0i16; samples];
             let mut out_buf = vec![0i16; samples * 11 / 10]; // 10% more samples out at most
-            let mut fell_behind = false;
             let mut print = 0;
 
             let (_sink, stream) = input_endpoint(&e)?.split();
+
+            fn playback(
+                st: &mut State,
+                audio_send: &mut ringbuf::Producer<i16>,
+                buf: &[i16],
+                out_buf: &mut [i16],
+            ) -> (usize, usize, usize) {
+                let buf_len = buf.len();
+                let mut fell_behind = false;
+                let (consumed, written) = st
+                    .process_interleaved_int(buf, out_buf)
+                    .expect("Resampling failed");
+                assert_eq!(consumed, buf_len); // It should be always true
+
+                let capacity = audio_send.capacity() as isize;
+
+                for &sample in &out_buf[..written] {
+                    if audio_send.push(sample).is_err() {
+                        fell_behind = true;
+                    }
+                }
+
+                let water_level = audio_send.len();
+
+                let (in_rate, _) = st.get_rate();
+
+                let new_rate = (in_rate as isize
+                    - (in_rate as isize * (water_level as isize * 2 - capacity) / capacity / 100))
+                    as usize;
+
+                st.set_rate(in_rate, new_rate).expect("Resampler error");
+
+                if fell_behind {
+                    warn!("Input stream fell behind!!");
+                }
+                (water_level, in_rate, new_rate)
+            }
 
             let map = stream
                 .map_err(|e| {
@@ -341,39 +377,9 @@ impl Playback {
                     let packet = msg.as_ref();
                     match dec.decode(packet, &mut buf) {
                         Ok(size) => {
-                            let buf_len = buf.len();
                             let (water_level, in_rate, new_rate) =
                                 if let Some(ref mut audio_send) = audio_send {
-                                    let (consumed, written) = st
-                                        .process_interleaved_int(&buf, &mut out_buf)
-                                        .expect("Resampling failed");
-                                    assert_eq!(consumed, buf_len); // It should be always true
-
-                                    let capacity = audio_send.capacity() as isize;
-
-                                    for &sample in &out_buf[..written] {
-                                        if audio_send.push(sample).is_err() {
-                                            fell_behind = true;
-                                        }
-                                    }
-
-                                    let water_level = audio_send.len() as isize;
-
-                                    let (in_rate, _) = st.get_rate();
-
-                                    let new_rate = in_rate as isize
-                                        - (in_rate as isize * (water_level * 2 - capacity)
-                                            / capacity
-                                            / 100);
-
-                                    st.set_rate(in_rate, new_rate as usize)
-                                        .expect("Resampler error");
-
-                                    if fell_behind {
-                                        warn!("Input stream fell behind!!");
-                                        fell_behind = false;
-                                    }
-                                    (water_level, in_rate, new_rate)
+                                    playback(&mut st, audio_send, &buf, &mut out_buf)
                                 } else {
                                     (0, 0, 0)
                                 };
