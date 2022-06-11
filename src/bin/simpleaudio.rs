@@ -315,6 +315,70 @@ impl Playback {
 
         let channels = audio.channels;
 
+        fn playback(
+            st: &mut State,
+            audio_send: &mut ringbuf::Producer<i16>,
+            buf: &[i16],
+            out_buf: &mut [i16],
+        ) -> (usize, usize, usize) {
+            let buf_len = buf.len();
+            let mut fell_behind = false;
+            let (consumed, written) = st
+                .process_interleaved_int(buf, out_buf)
+                .expect("Resampling failed");
+            assert_eq!(consumed, buf_len); // It should be always true
+
+            let capacity = audio_send.capacity() as isize;
+
+            for &sample in &out_buf[..written] {
+                if audio_send.push(sample).is_err() {
+                    fell_behind = true;
+                }
+            }
+
+            let water_level = audio_send.len();
+
+            let (in_rate, _) = st.get_rate();
+
+            let new_rate = (in_rate as isize
+                - (in_rate as isize * (water_level as isize * 2 - capacity) / capacity / 100))
+                as usize;
+
+            st.set_rate(in_rate, new_rate).expect("Resampler error");
+
+            if fell_behind {
+                warn!("Input stream fell behind!!");
+            }
+            (water_level, in_rate, new_rate)
+        }
+
+        fn print_stats(
+            buf: &[i16],
+            size: usize,
+            packet: &[u8],
+            channels: u16,
+            water_level: usize,
+            in_rate: usize,
+            new_rate: usize,
+        ) {
+            info!(
+                "Decoded {}/{} from {} decoded pending {} {} resampling {}/{}",
+                buf.len(),
+                size,
+                packet.len(),
+                water_level,
+                if channels == 1 {
+                    format!("dbfs {:.3}", dbfs(buf[0]))
+                } else {
+                    let r = buf[0];
+                    let l = buf[1];
+                    format!("dbfs {:.3} {:.3}", dbfs(r), dbfs(l))
+                },
+                in_rate,
+                new_rate
+            );
+        }
+
         async fn udp_input(
             e: &EndPoint,
             mut audio_send: Option<&mut ringbuf::Producer<i16>>,
@@ -328,43 +392,6 @@ impl Playback {
             let mut print = 0;
 
             let (_sink, stream) = input_endpoint(&e)?.split();
-
-            fn playback(
-                st: &mut State,
-                audio_send: &mut ringbuf::Producer<i16>,
-                buf: &[i16],
-                out_buf: &mut [i16],
-            ) -> (usize, usize, usize) {
-                let buf_len = buf.len();
-                let mut fell_behind = false;
-                let (consumed, written) = st
-                    .process_interleaved_int(buf, out_buf)
-                    .expect("Resampling failed");
-                assert_eq!(consumed, buf_len); // It should be always true
-
-                let capacity = audio_send.capacity() as isize;
-
-                for &sample in &out_buf[..written] {
-                    if audio_send.push(sample).is_err() {
-                        fell_behind = true;
-                    }
-                }
-
-                let water_level = audio_send.len();
-
-                let (in_rate, _) = st.get_rate();
-
-                let new_rate = (in_rate as isize
-                    - (in_rate as isize * (water_level as isize * 2 - capacity) / capacity / 100))
-                    as usize;
-
-                st.set_rate(in_rate, new_rate).expect("Resampler error");
-
-                if fell_behind {
-                    warn!("Input stream fell behind!!");
-                }
-                (water_level, in_rate, new_rate)
-            }
 
             let map = stream
                 .map_err(|e| {
@@ -385,21 +412,14 @@ impl Playback {
                                 };
 
                             if print % 25u32 == 0 {
-                                info!(
-                                    "Decoded {}/{} from {} decoded pending {} {} resampling {}/{}",
-                                    buf.len(),
+                                print_stats(
+                                    &buf,
                                     size,
-                                    packet.len(),
+                                    packet,
+                                    channels,
                                     water_level,
-                                    if channels == 1 {
-                                        format!("dbfs {:.3}", dbfs(buf[0]))
-                                    } else {
-                                        let r = buf[0];
-                                        let l = buf[1];
-                                        format!("dbfs {:.3} {:.3}", dbfs(r), dbfs(l))
-                                    },
                                     in_rate,
-                                    new_rate
+                                    new_rate,
                                 );
                             }
                             print = print.wrapping_add(1);
