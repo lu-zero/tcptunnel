@@ -269,6 +269,80 @@ struct Playback {
     codec: DecoderOpt,
 }
 
+trait AudioOut {
+    fn playback(&mut self, buf: &[i16]) -> (usize, usize, usize);
+}
+
+struct NoOp;
+
+impl AudioOut for NoOp {
+    fn playback(&mut self, _buf: &[i16]) -> (usize, usize, usize) {
+        (0, 0, 0)
+    }
+}
+
+struct Direct {
+    st: State,
+    audio_send: ringbuf::Producer<i16>,
+    _audio_stream: cpal::Stream,
+    out_buf: Vec<i16>,
+}
+
+impl Direct {
+    fn new(
+        st: State,
+        audio_stream: cpal::Stream,
+        audio_send: ringbuf::Producer<i16>,
+        samples: usize,
+    ) -> Self {
+        let out_buf = vec![0i16; samples * 11 / 10]; // 10% more samples out at most
+
+        Self {
+            st,
+            audio_send,
+            _audio_stream: audio_stream,
+            out_buf,
+        }
+    }
+}
+
+impl AudioOut for Direct {
+    fn playback(&mut self, buf: &[i16]) -> (usize, usize, usize) {
+        let buf_len = buf.len();
+        let mut fell_behind = false;
+        let (consumed, written) = self
+            .st
+            .process_interleaved_int(buf, &mut self.out_buf)
+            .expect("Resampling failed");
+        assert_eq!(consumed, buf_len); // It should be always true
+
+        let capacity = self.audio_send.capacity() as isize;
+
+        for &sample in &self.out_buf[..written] {
+            if self.audio_send.push(sample).is_err() {
+                fell_behind = true;
+            }
+        }
+
+        let water_level = self.audio_send.len();
+
+        let (in_rate, _) = self.st.get_rate();
+
+        let new_rate = (in_rate as isize
+            - (in_rate as isize * (water_level as isize * 2 - capacity) / capacity / 100))
+            as usize;
+
+        self.st
+            .set_rate(in_rate, new_rate)
+            .expect("Resampler error");
+
+        if fell_behind {
+            warn!("Input stream fell behind!!");
+        }
+        (water_level, in_rate, new_rate)
+    }
+}
+
 impl Playback {
     fn run(self, audio: &AudioOpt) -> Result<()> {
         let af = Affinity::new(audio.cpu)?;
@@ -315,43 +389,6 @@ impl Playback {
 
         let channels = audio.channels;
 
-        fn playback(
-            st: &mut State,
-            audio_send: &mut ringbuf::Producer<i16>,
-            buf: &[i16],
-            out_buf: &mut [i16],
-        ) -> (usize, usize, usize) {
-            let buf_len = buf.len();
-            let mut fell_behind = false;
-            let (consumed, written) = st
-                .process_interleaved_int(buf, out_buf)
-                .expect("Resampling failed");
-            assert_eq!(consumed, buf_len); // It should be always true
-
-            let capacity = audio_send.capacity() as isize;
-
-            for &sample in &out_buf[..written] {
-                if audio_send.push(sample).is_err() {
-                    fell_behind = true;
-                }
-            }
-
-            let water_level = audio_send.len();
-
-            let (in_rate, _) = st.get_rate();
-
-            let new_rate = (in_rate as isize
-                - (in_rate as isize * (water_level as isize * 2 - capacity) / capacity / 100))
-                as usize;
-
-            st.set_rate(in_rate, new_rate).expect("Resampler error");
-
-            if fell_behind {
-                warn!("Input stream fell behind!!");
-            }
-            (water_level, in_rate, new_rate)
-        }
-
         fn print_stats(
             buf: &[i16],
             size: usize,
@@ -381,14 +418,12 @@ impl Playback {
 
         async fn udp_input(
             e: &EndPoint,
-            mut audio_send: Option<&mut ringbuf::Producer<i16>>,
+            out: &mut dyn AudioOut,
             dec: &mut dyn Decoder,
-            mut st: State,
             channels: u16,
             samples: usize,
         ) -> anyhow::Result<()> {
             let mut buf = vec![0i16; samples];
-            let mut out_buf = vec![0i16; samples * 11 / 10]; // 10% more samples out at most
             let mut print = 0;
 
             let (_sink, stream) = input_endpoint(&e)?.split();
@@ -404,12 +439,7 @@ impl Playback {
                     let packet = msg.as_ref();
                     match dec.decode(packet, &mut buf) {
                         Ok(size) => {
-                            let (water_level, in_rate, new_rate) =
-                                if let Some(ref mut audio_send) = audio_send {
-                                    playback(&mut st, audio_send, &buf, &mut out_buf)
-                                } else {
-                                    (0, 0, 0)
-                                };
+                            let (water_level, in_rate, new_rate) = out.playback(&buf);
 
                             if print % 25u32 == 0 {
                                 print_stats(
@@ -436,20 +466,22 @@ impl Playback {
         }
 
         af.audio_affinity();
-        let _audio_stream = if audio.audio_device.is_some() {
+        let mut out = if audio.audio_device.is_some() {
             let audio_stream = audio.output(output_cb)?;
             audio_stream.play()?;
-            Some(audio_stream)
+
+            let out = Direct::new(st, audio_stream, audio_send, samples);
+
+            Box::new(out) as Box<dyn AudioOut>
         } else {
-            None
+            Box::new(NoOp) as Box<dyn AudioOut>
         };
 
         af.normal_affinity();
         let rt = Builder::new_current_thread().enable_io().build()?;
 
         rt.block_on(async move {
-            let audio_send = audio.audio_device.as_ref().map(|_| &mut audio_send);
-            udp_input(&self.input, audio_send, dec.as_mut(), st, channels, samples).await
+            udp_input(&self.input, out.as_mut(), dec.as_mut(), channels, samples).await
         })?;
 
         Ok(())
