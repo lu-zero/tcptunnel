@@ -397,7 +397,7 @@ impl AudioOut for Direct {
         }
 
         let (in_rate, _) = self.st.get_rate();
-        let water_level = self.audio_send.capacity();
+        let water_level = self.audio_send.len();
 
         let new_rate = (in_rate as isize
             - (in_rate as isize * (water_level as isize * 2 - capacity) / capacity / 100))
@@ -423,6 +423,7 @@ struct LoudNormOut {
     out: Direct,
     loudnorm: loudnorm::State,
     buf: Vec<f64>,
+    samples: usize,
 }
 
 impl LoudNormOut {
@@ -432,14 +433,15 @@ impl LoudNormOut {
         audio_send: ringbuf::Producer<i16>,
         samples: usize,
     ) -> Result<Self> {
+        let samples = samples * 5;
         let out = Direct::new(audio, audio_stream, audio_send, samples)?;
         let loudnorm = audio.norm();
-        let buf_len = loudnorm.current_samples_per_frame * out.channels;
 
         Ok(Self {
             out,
             loudnorm,
-            buf: vec![0.0; buf_len],
+            buf: Vec::with_capacity(samples),
+            samples,
         })
     }
 }
@@ -447,17 +449,13 @@ impl LoudNormOut {
 impl AudioOut for LoudNormOut {
     fn playback(&mut self, buf: &[i16]) {
         let max = std::i16::MAX as f64;
-        let channels = self.out.channels;
         self.buf.extend(buf.iter().map(|&s| s as f64 / max));
 
-        if self.buf.len() / channels >= self.loudnorm.current_samples_per_frame {
-            let rem = self.buf.split_off(self.loudnorm.current_samples_per_frame);
+        if self.buf.len() >= self.samples {
+            let rem = self.buf.split_off(self.samples);
             let out = self.loudnorm.process(&self.buf).expect("loudnorm failed");
-            let size = self.out.out_buf.len();
-            for chunk in out.chunks(size) {
-                let buf = chunk.iter().map(|f| (f * max) as i16).collect::<Vec<_>>();
-                self.out.playback(&buf);
-            }
+            let buf = out.iter().map(|f| (f * max) as i16).collect::<Vec<_>>();
+            self.out.playback(&buf);
             self.buf = rem;
         }
     }
@@ -523,7 +521,7 @@ impl Playback {
 
                     let packet = msg.as_ref();
                     match dec.decode(packet, &mut buf) {
-                        Ok(size) => out.playback(&buf[..size]),
+                        Ok(_size) => out.playback(&buf),
                         Err(err) => warn!("Error decoding {}", err),
                     }
 
