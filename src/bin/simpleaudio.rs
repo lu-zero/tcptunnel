@@ -16,7 +16,7 @@ use tokio::runtime::Builder;
 use tokio_util::codec::BytesCodec;
 use tokio_util::udp::UdpFramed;
 
-use tcptunnel::{to_endpoint, EndPoint};
+use tcptunnel::{loudnorm, to_endpoint, EndPoint};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -72,6 +72,10 @@ struct AudioOpt {
     /// size of the feeding buffer in ms
     #[clap(long, default_value = "80", global = true)]
     feeding_buffer: usize,
+
+    /// Insert a loudness normalization filter (Increases the latency by 300ms)
+    #[clap(long, global = true)]
+    normalize: bool,
 }
 
 impl AudioOpt {
@@ -141,6 +145,13 @@ impl AudioOpt {
             4,
         )
         .map_err(|_| anyhow!("Cannot setup the resampler"))
+    }
+
+    /// Create a loudness normalization filter
+    fn norm(&self) -> loudnorm::State {
+        let settings = loudnorm::Settings::default();
+
+        loudnorm::State::new(&settings, self.channels as usize, self.sample_rate as usize)
     }
 }
 
@@ -270,14 +281,41 @@ struct Playback {
 }
 
 trait AudioOut {
-    fn playback(&mut self, buf: &[i16]) -> (usize, usize, usize);
+    fn playback(&mut self, buf: &[i16]);
 }
 
-struct NoOp;
+struct NoOp {
+    channels: usize,
+    print: u32,
+}
+
+impl NoOp {
+    fn new(channels: usize) -> Self {
+        NoOp { channels, print: 0 }
+    }
+
+    fn print_stats(&self, buf: &[i16]) {
+        info!(
+            "Decoded {} {}",
+            buf.len(),
+            if self.channels == 1 {
+                format!("dbfs {:.3}", dbfs(buf[0]))
+            } else {
+                let r = buf[0];
+                let l = buf[1];
+                format!("dbfs {:.3} {:.3}", dbfs(r), dbfs(l))
+            },
+        );
+    }
+}
 
 impl AudioOut for NoOp {
-    fn playback(&mut self, _buf: &[i16]) -> (usize, usize, usize) {
-        (0, 0, 0)
+    fn playback(&mut self, buf: &[i16]) {
+        if self.print % 25 == 0 {
+            self.print_stats(buf)
+        }
+
+        self.print = self.print.wrapping_add(1);
     }
 }
 
@@ -286,28 +324,62 @@ struct Direct {
     audio_send: ringbuf::Producer<i16>,
     _audio_stream: cpal::Stream,
     out_buf: Vec<i16>,
+    channels: usize,
+    print: u32,
 }
 
 impl Direct {
     fn new(
-        st: State,
+        audio: &AudioOpt,
         audio_stream: cpal::Stream,
         audio_send: ringbuf::Producer<i16>,
         samples: usize,
-    ) -> Self {
+    ) -> Result<Self> {
         let out_buf = vec![0i16; samples * 11 / 10]; // 10% more samples out at most
+        let st = audio.resampler()?;
+        let channels = audio.channels as usize;
+        let input_latency = st.get_input_latency();
+        let output_latency = st.get_output_latency();
 
-        Self {
+        info!(
+            "Resampler input latency {} output_latency {}",
+            input_latency, output_latency
+        );
+
+        Ok(Self {
             st,
             audio_send,
             _audio_stream: audio_stream,
             out_buf,
-        }
+            channels,
+            print: 0,
+        })
+    }
+
+    fn print_stats(&self, buf: &[i16]) {
+        let water_level = self.audio_send.len();
+        let (in_rate, out_rate) = self.st.get_rate();
+        let channels = self.channels;
+
+        info!(
+            "Decoded {} pending {} {} resampling {}/{}",
+            buf.len(),
+            water_level,
+            if channels == 1 {
+                format!("dbfs {:.3}", dbfs(buf[0]))
+            } else {
+                let r = buf[0];
+                let l = buf[1];
+                format!("dbfs {:.3} {:.3}", dbfs(r), dbfs(l))
+            },
+            in_rate,
+            out_rate
+        );
     }
 }
 
 impl AudioOut for Direct {
-    fn playback(&mut self, buf: &[i16]) -> (usize, usize, usize) {
+    fn playback(&mut self, buf: &[i16]) {
         let buf_len = buf.len();
         let mut fell_behind = false;
         let (consumed, written) = self
@@ -324,9 +396,8 @@ impl AudioOut for Direct {
             }
         }
 
-        let water_level = self.audio_send.len();
-
         let (in_rate, _) = self.st.get_rate();
+        let water_level = self.audio_send.capacity();
 
         let new_rate = (in_rate as isize
             - (in_rate as isize * (water_level as isize * 2 - capacity) / capacity / 100))
@@ -339,7 +410,56 @@ impl AudioOut for Direct {
         if fell_behind {
             warn!("Input stream fell behind!!");
         }
-        (water_level, in_rate, new_rate)
+
+        if self.print % 25 == 0 {
+            self.print_stats(buf);
+        }
+
+        self.print = self.print.wrapping_add(1);
+    }
+}
+
+struct LoudNormOut {
+    out: Direct,
+    loudnorm: loudnorm::State,
+    buf: Vec<f64>,
+}
+
+impl LoudNormOut {
+    fn new(
+        audio: &AudioOpt,
+        audio_stream: cpal::Stream,
+        audio_send: ringbuf::Producer<i16>,
+        samples: usize,
+    ) -> Result<Self> {
+        let out = Direct::new(audio, audio_stream, audio_send, samples)?;
+        let loudnorm = audio.norm();
+        let buf_len = loudnorm.current_samples_per_frame * out.channels;
+
+        Ok(Self {
+            out,
+            loudnorm,
+            buf: vec![0.0; buf_len],
+        })
+    }
+}
+
+impl AudioOut for LoudNormOut {
+    fn playback(&mut self, buf: &[i16]) {
+        let max = std::i16::MAX as f64;
+        let channels = self.out.channels;
+        self.buf.extend(buf.iter().map(|&s| s as f64 / max));
+
+        if self.buf.len() / channels >= self.loudnorm.current_samples_per_frame {
+            let rem = self.buf.split_off(self.loudnorm.current_samples_per_frame);
+            let out = self.loudnorm.process(&self.buf).expect("loudnorm failed");
+            let size = self.out.out_buf.len();
+            for chunk in out.chunks(size) {
+                let buf = chunk.iter().map(|f| (f * max) as i16).collect::<Vec<_>>();
+                self.out.playback(&buf);
+            }
+            self.buf = rem;
+        }
     }
 }
 
@@ -347,18 +467,14 @@ impl Playback {
     fn run(self, audio: &AudioOpt) -> Result<()> {
         let af = Affinity::new(audio.cpu)?;
 
-        let st = audio.resampler()?;
-        let input_latency = st.get_input_latency();
-        let output_latency = st.get_output_latency();
-
-        info!(
-            "Resampler input latency {} output_latency {}",
-            input_latency, output_latency
-        );
-
         // 20ms frames for opus, 7ms for PCM
         let samples = self.codec.codec.samples(audio);
-        let feeding_buffer = audio.samples_from_ms(audio.feeding_buffer);
+        let feeding_ms = if audio.normalize {
+            audio.feeding_buffer + 300
+        } else {
+            audio.feeding_buffer
+        };
+        let feeding_buffer = audio.samples_from_ms(feeding_ms);
         let prebuffering = feeding_buffer / 2;
 
         // The channel to share samples between the codec and the audio device
@@ -387,44 +503,13 @@ impl Playback {
 
         let mut dec = self.codec.decoder(&audio)?;
 
-        let channels = audio.channels;
-
-        fn print_stats(
-            buf: &[i16],
-            size: usize,
-            packet: &[u8],
-            channels: u16,
-            water_level: usize,
-            in_rate: usize,
-            new_rate: usize,
-        ) {
-            info!(
-                "Decoded {}/{} from {} decoded pending {} {} resampling {}/{}",
-                buf.len(),
-                size,
-                packet.len(),
-                water_level,
-                if channels == 1 {
-                    format!("dbfs {:.3}", dbfs(buf[0]))
-                } else {
-                    let r = buf[0];
-                    let l = buf[1];
-                    format!("dbfs {:.3} {:.3}", dbfs(r), dbfs(l))
-                },
-                in_rate,
-                new_rate
-            );
-        }
-
         async fn udp_input(
             e: &EndPoint,
             out: &mut dyn AudioOut,
             dec: &mut dyn Decoder,
-            channels: u16,
             samples: usize,
         ) -> anyhow::Result<()> {
             let mut buf = vec![0i16; samples];
-            let mut print = 0;
 
             let (_sink, stream) = input_endpoint(&e)?.split();
 
@@ -438,22 +523,7 @@ impl Playback {
 
                     let packet = msg.as_ref();
                     match dec.decode(packet, &mut buf) {
-                        Ok(size) => {
-                            let (water_level, in_rate, new_rate) = out.playback(&buf);
-
-                            if print % 25u32 == 0 {
-                                print_stats(
-                                    &buf,
-                                    size,
-                                    packet,
-                                    channels,
-                                    water_level,
-                                    in_rate,
-                                    new_rate,
-                                );
-                            }
-                            print = print.wrapping_add(1);
-                        }
+                        Ok(size) => out.playback(&buf[..size]),
                         Err(err) => warn!("Error decoding {}", err),
                     }
 
@@ -470,19 +540,24 @@ impl Playback {
             let audio_stream = audio.output(output_cb)?;
             audio_stream.play()?;
 
-            let out = Direct::new(st, audio_stream, audio_send, samples);
-
-            Box::new(out) as Box<dyn AudioOut>
+            if audio.normalize {
+                let out = LoudNormOut::new(audio, audio_stream, audio_send, samples)?;
+                Box::new(out) as Box<dyn AudioOut>
+            } else {
+                let out = Direct::new(audio, audio_stream, audio_send, samples)?;
+                Box::new(out) as Box<dyn AudioOut>
+            }
         } else {
-            Box::new(NoOp) as Box<dyn AudioOut>
+            let channels = audio.channels as usize;
+            Box::new(NoOp::new(channels)) as Box<dyn AudioOut>
         };
 
         af.normal_affinity();
         let rt = Builder::new_current_thread().enable_io().build()?;
 
-        rt.block_on(async move {
-            udp_input(&self.input, out.as_mut(), dec.as_mut(), channels, samples).await
-        })?;
+        rt.block_on(
+            async move { udp_input(&self.input, out.as_mut(), dec.as_mut(), samples).await },
+        )?;
 
         Ok(())
     }

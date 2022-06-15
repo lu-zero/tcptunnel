@@ -87,7 +87,7 @@ pub struct State {
     // Number of channels
     channels: usize,
     // Current amount of sample we consume per iteration: for the first frame 3s, afterwards 100ms
-    current_samples_per_frame: usize,
+    pub current_samples_per_frame: usize,
 
     // Settings during setup
     offset: f64,
@@ -1228,6 +1228,14 @@ impl State {
         self.frame_type = FrameType::Linear;
 
         Ok(())
+    }
+
+    pub fn process_i16(&mut self, src: &[i16]) -> anyhow::Result<Vec<i16>> {
+        let max = std::i16::MAX as f64;
+        let buf = src.iter().map(|&s| s as f64 / max).collect::<Vec<_>>();
+        let out = self.process(&buf);
+
+        out.map(|buf| buf.iter().map(|f| (f * max) as i16).collect())
     }
 
     pub fn process(&mut self, src: &[f64]) -> anyhow::Result<Vec<f64>> {
