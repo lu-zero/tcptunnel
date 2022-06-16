@@ -895,7 +895,7 @@ impl State {
         // overwrite these 100ms directly.
         self.limiter_buf_index = 0;
 
-        let mut outbuf = vec![0.0; FRAME_SIZE];
+        let mut outbuf = vec![0.0; FRAME_SIZE * self.channels];
         let dst = &mut outbuf;
 
         self.true_peak_limiter(dst);
@@ -1052,7 +1052,7 @@ impl State {
         // the position where we have to start writing the next 100ms in the next
         // iteration.
 
-        let mut outbuf = vec![0.0; self.current_samples_per_frame];
+        let mut outbuf = vec![0.0; self.current_samples_per_frame * self.channels];
         let dst = &mut outbuf;
 
         // This now consumes the next 100ms of limiter_buf for the output.
@@ -1136,7 +1136,7 @@ impl State {
         // buf.
         let out_num_samples = 30 * FRAME_SIZE - (FRAME_SIZE - num_samples);
 
-        let mut outbuf = vec![0.0; out_num_samples];
+        let mut outbuf = vec![0.0; out_num_samples * self.channels];
         {
             let dst = &mut outbuf;
             let mut smp_cnt = 0;
