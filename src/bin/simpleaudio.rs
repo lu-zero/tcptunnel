@@ -41,7 +41,7 @@ fn dbfs(v: i16) -> f32 {
     let v = if v == 0 {
         0.0
     } else {
-        20.0 * (v.abs() as f32).log10()
+        20.0 * (v as f32).abs().log10()
     };
 
     v - 90.31
