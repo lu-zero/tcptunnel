@@ -11,6 +11,8 @@ use cpal::Device;
 use flume::Receiver;
 use futures::future::ready;
 use futures::stream::{StreamExt, TryStreamExt};
+use ringbuf::HeapProducer as Producer;
+use ringbuf::HeapRb as RingBuffer;
 use speexdsp::resampler::*;
 use tokio::runtime::Builder;
 use tokio_util::codec::BytesCodec;
@@ -288,7 +290,7 @@ impl Playback {
         let prebuffering = feeding_buffer / 2;
 
         // The channel to share samples between the codec and the audio device
-        let (mut audio_send, mut audio_recv) = ringbuf::RingBuffer::new(feeding_buffer).split();
+        let (mut audio_send, mut audio_recv) = RingBuffer::new(feeding_buffer).split();
 
         for _ in 0..prebuffering {
             let _ = audio_send.push(0);
@@ -317,7 +319,7 @@ impl Playback {
 
         async fn udp_input(
             e: &EndPoint,
-            mut audio_send: Option<&mut ringbuf::Producer<i16>>,
+            mut audio_send: Option<&mut Producer<i16>>,
             dec: &mut dyn Decoder,
             mut st: State,
             channels: u16,
@@ -455,7 +457,7 @@ impl Record {
         let feeding_buffer = audio.samples_from_ms(audio.feeding_buffer);
 
         // The channel to share samples between the codec and the audio device
-        let (mut audio_send, mut audio_recv) = ringbuf::RingBuffer::new(feeding_buffer).split();
+        let (mut audio_send, mut audio_recv) = RingBuffer::new(feeding_buffer).split();
         // The channel to share packets between the codec and the network
         let (net_send, net_recv) = flume::bounded::<Bytes>(4);
 

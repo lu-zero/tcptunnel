@@ -12,7 +12,7 @@ use cpal::Device;
 use flume::{Receiver, Sender};
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::TryFutureExt;
-use ringbuf::RingBuffer;
+use ringbuf::HeapRb as RingBuffer;
 use tokio::runtime::Runtime;
 use tokio_util::codec::BytesCodec;
 use tokio_util::udp::UdpFramed;
