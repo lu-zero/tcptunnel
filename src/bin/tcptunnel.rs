@@ -46,7 +46,7 @@ impl Opt {
 
         let udp = match udp_ip {
             IpAddr::V4(ref addr) => {
-                let udp = Socket::new(Domain::ipv4(), Type::dgram(), Some(Protocol::udp()))?;
+                let udp = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
                 udp.set_reuse_address(true)?;
                 udp.set_reuse_port(true)?;
                 if let Some(udp_buffer) = self.udp_buffer {
@@ -69,7 +69,7 @@ impl Opt {
                 udp
             }
             IpAddr::V6(ref addr) => {
-                let udp = Socket::new(Domain::ipv6(), Type::dgram(), Some(Protocol::udp()))?;
+                let udp = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
                 udp.set_reuse_address(true)?;
                 udp.set_reuse_port(true)?;
                 if let Some(udp_buffer) = self.udp_buffer {
@@ -93,7 +93,7 @@ impl Opt {
             }
         };
 
-        let udp = UdpSocket::from_std(udp.into_udp_socket())?;
+        let udp = UdpSocket::from_std(udp.into())?;
 
         Ok(udp)
     }
