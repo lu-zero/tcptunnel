@@ -96,7 +96,7 @@ impl AudioOpt {
 
         info!("Audio configuration {:?}", config);
 
-        let stream = device.build_input_stream(&config, cb, err_cb)?;
+        let stream = device.build_input_stream(&config, cb, err_cb, None)?;
 
         Ok(stream)
     }
@@ -119,7 +119,7 @@ impl AudioOpt {
 
             info!("Audio configuration {:?}", config);
 
-            let stream = device.build_output_stream(&config, cb, err_cb)?;
+            let stream = device.build_output_stream(&config, cb, err_cb, None)?;
 
             Ok(stream)
         } else {
