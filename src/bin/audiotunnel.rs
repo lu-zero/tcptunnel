@@ -292,7 +292,7 @@ impl Playback {
         });
 
         async fn udp_input(e: &EndPoint, send: &Sender<Bytes>) -> anyhow::Result<()> {
-            let (_sink, stream) = input_endpoint(&e)?.split();
+            let stream = input_endpoint(&e)?;
 
             let map = stream
                 .map_err(|e| {

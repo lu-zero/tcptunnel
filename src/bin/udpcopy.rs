@@ -71,8 +71,8 @@ impl Opt {
 async fn main() -> Result<()> {
     let opt = Opt::parse();
 
-    let (_sink, udp_stream) = opt.input_endpoint()?.split();
-    let (udp_sink, _stream) = opt.output_endpoint()?.split();
+    let udp_stream = opt.input_endpoint()?;
+    let udp_sink = opt.output_endpoint()?;
     let udp_addr = opt.output.addr;
 
     let mut now = Instant::now();

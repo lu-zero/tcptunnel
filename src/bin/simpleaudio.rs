@@ -330,7 +330,7 @@ impl Playback {
             let mut fell_behind = false;
             let mut print = 0;
 
-            let (_sink, stream) = input_endpoint(&e)?.split();
+            let stream = input_endpoint(&e)?;
 
             let map = stream
                 .map_err(|e| {

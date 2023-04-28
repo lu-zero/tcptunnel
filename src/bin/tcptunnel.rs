@@ -103,7 +103,7 @@ impl Opt {
         let udp = self.setup_udp(self.udp_addr)?;
 
         let tcp_sink = FramedWrite::new(tcp, BytesCodec::new());
-        let (_udp_sink, udp_stream) = UdpFramed::new(udp, BytesCodec::new()).split();
+        let udp_stream = UdpFramed::new(udp, BytesCodec::new());
         let mut now = Instant::now();
         let mut size: usize = 0;
 

@@ -63,7 +63,7 @@ impl Opt {
             let addr = e.addr;
             let udp = e.setup_udp(e.addr)?;
 
-            let (_sink, udp_stream) = UdpFramed::new(udp, BytesCodec::new()).split();
+            let udp_stream = UdpFramed::new(udp, BytesCodec::new());
 
             let mut now = Instant::now();
             let mut size: usize = 0;
