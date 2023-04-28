@@ -15,8 +15,8 @@ clap = { version = "3", features = ["derive"] }
 anyhow = "1.0"
 socket2 = { version = "0.5.2", features = ["all"] }
 url = "2.2"
-rtp = "0.6"
-webrtc-util = "0.5"
+rtp = "0.6.8"
+webrtc-util = "0.7"
 indicatif = "0.16"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
