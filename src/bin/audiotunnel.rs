@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use audiopus::{Channels, SampleRate, TryFrom};
 use bytes::Bytes;
-use clap::{ArgEnum, Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Device;
 use flume::{Receiver, Sender};
@@ -21,7 +21,7 @@ use tcptunnel::{to_endpoint, EndPoint};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
-#[derive(Debug, Clone, ArgEnum)]
+#[derive(Debug, Clone, ValueEnum)]
 enum Codec {
     /// Opus
     Opus,
@@ -107,7 +107,7 @@ impl AudioOpt {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct EncoderOpt {
     /// Select a codec
     codec: Codec,
@@ -119,32 +119,28 @@ struct EncoderOpt {
     bitrate: i32,
 }
 
-impl std::str::FromStr for EncoderOpt {
-    type Err = anyhow::Error;
+fn to_encoder_opt(s: &str) -> anyhow::Result<EncoderOpt> {
+    let u = url::Url::parse("codec:/")?.join(s)?;
 
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let u = url::Url::parse("codec:/")?.join(s)?;
+    let codec = Codec::from_str(
+        &u.path_segments()
+            .ok_or_else(|| anyhow!("Unexpected codec path"))?
+            .next()
+            .ok_or_else(|| anyhow!("empty codec"))?,
+        true,
+    )
+    .map_err(anyhow::Error::msg)?;
 
-        let codec = Codec::from_str(
-            &u.path_segments()
-                .ok_or_else(|| anyhow!("Unexpected codec path"))?
-                .next()
-                .ok_or_else(|| anyhow!("empty codec"))?,
-            true,
-        )
-        .map_err(anyhow::Error::msg)?;
+    let query = u.query_pairs().collect::<HashMap<_, _>>();
 
-        let query = u.query_pairs().collect::<HashMap<_, _>>();
+    let cbr = query.get("cbr").is_some();
+    let bitrate = query.get("bitrate").map(|v| v.parse()).unwrap_or(Ok(0))?;
 
-        let cbr = query.get("cbr").is_some();
-        let bitrate = query.get("bitrate").map(|v| v.parse()).unwrap_or(Ok(0))?;
-
-        Ok(EncoderOpt {
-            codec,
-            cbr,
-            bitrate,
-        })
-    }
+    Ok(EncoderOpt {
+        codec,
+        cbr,
+        bitrate,
+    })
 }
 
 impl EncoderOpt {
@@ -176,7 +172,7 @@ impl EncoderOpt {
 #[derive(Debug, Args)]
 struct DecoderOpt {
     /// Select a codec
-    #[clap(long, default_value = "opus", arg_enum)]
+    #[clap(long, default_value = "opus")]
     codec: Codec,
 }
 
@@ -206,7 +202,7 @@ struct Playback {
     /// multicast_ttl=<u32> (IPv4-only)
     /// multicast_hops=<u32> (IPv6-only)
     /// buffer=<usize>
-    #[clap(long, short,  parse(try_from_str = to_endpoint))]
+    #[clap(long, short,  value_parser = to_endpoint)]
     input: EndPoint,
 
     #[clap(flatten)]
@@ -326,14 +322,14 @@ struct Record {
     /// multicast_ttl=<u32> (IPv4-only)
     /// multicast_hops=<u32> (IPv6-only)
     /// buffer=<usize>
-    #[clap(long, short, parse(try_from_str = to_endpoint), required = true)]
+    #[clap(long, short, value_parser = to_endpoint, required = true)]
     output: Vec<EndPoint>,
 
     /// Codec to use, codec-specific-options encoded as url query
     /// It supports
     /// bitrate=<u32>
     /// cbr
-    #[clap(long, parse(try_from_str), default_value = "opus")]
+    #[clap(long, value_parser = to_encoder_opt, default_value = "opus")]
     codec: Vec<EncoderOpt>,
 }
 

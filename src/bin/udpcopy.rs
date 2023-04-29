@@ -20,7 +20,7 @@ struct Opt {
     /// multicast_ttl=<u32> (IPv4-only)
     /// multicast_hops=<u32> (IPv6-only)
     /// buffer=<usize>
-    #[clap(long, short,  parse(try_from_str = to_endpoint))]
+    #[clap(long, short, value_parser = to_endpoint)]
     input: EndPoint,
     /// Output source
     /// It supports the following query parameters
@@ -28,7 +28,7 @@ struct Opt {
     /// multicast_ttl=<u32> (IPv4-only)
     /// multicast_hops=<u32> (IPv6-only)
     /// buffer=<usize>
-    #[clap(long, short, parse(try_from_str = to_endpoint))]
+    #[clap(long, short, value_parser = to_endpoint)]
     output: EndPoint,
     /// Verbose logging
     #[clap(long, short)]

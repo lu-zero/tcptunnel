@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use audiopus::{Channels, SampleRate, TryFrom};
 use bytes::Bytes;
-use clap::{ArgEnum, Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Device;
 use flume::Receiver;
@@ -22,7 +22,7 @@ use tcptunnel::{to_endpoint, EndPoint};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
-#[derive(Debug, Clone, ArgEnum)]
+#[derive(Debug, Clone, ValueEnum)]
 enum Codec {
     /// Opus
     Opus,
@@ -198,7 +198,7 @@ use affinity::Affinity;
 #[derive(Debug, Args)]
 struct EncoderOpt {
     /// Select a codec
-    #[clap(long, default_value = "opus", arg_enum)]
+    #[clap(long, default_value = "opus")]
     codec: Codec,
 
     /// Use cbr (by default vbr is used when available)
@@ -234,7 +234,7 @@ impl EncoderOpt {
 #[derive(Debug, Args)]
 struct DecoderOpt {
     /// Select a codec
-    #[clap(long, default_value = "opus", arg_enum)]
+    #[clap(long, default_value = "opus")]
     codec: Codec,
 }
 
@@ -264,7 +264,7 @@ struct Playback {
     /// multicast_ttl=<u32> (IPv4-only)
     /// multicast_hops=<u32> (IPv6-only)
     /// buffer=<usize>
-    #[clap(long, short,  parse(try_from_str = to_endpoint))]
+    #[clap(long, short,  value_parser  = to_endpoint)]
     input: EndPoint,
 
     #[clap(flatten)]
@@ -440,7 +440,7 @@ struct Record {
     /// multicast_ttl=<u32> (IPv4-only)
     /// multicast_hops=<u32> (IPv6-only)
     /// buffer=<usize>
-    #[clap(long, short, parse(try_from_str = to_endpoint))]
+    #[clap(long, short, value_parser = to_endpoint)]
     output: EndPoint,
 
     #[clap(flatten)]

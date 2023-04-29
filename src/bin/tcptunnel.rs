@@ -226,10 +226,10 @@ struct Opt {
     #[clap(short = 'i', long, name = "MCAST_INTERFACE_INDEX")]
     udp_mcast_interface_index: Option<u32>,
     /// UDP address in `ip:port` format
-    #[clap(short, long, name = "UDP_ADDR", parse(try_from_str = to_socket_addr))]
+    #[clap(short, long, name = "UDP_ADDR", value_parser = to_socket_addr)]
     udp_addr: SocketAddr,
     /// TCP address in `ip:port` format
-    #[clap(short, long, name = "TCP_ADDR", parse(try_from_str = to_socket_addr))]
+    #[clap(short, long, name = "TCP_ADDR", value_parser = to_socket_addr)]
     tcp_addr: SocketAddr,
     // Set to listen on the tcp port
     // #[clap(short)]
