@@ -20,6 +20,7 @@ impl EndPoint {
                 udp.set_nonblocking(true)?;
                 udp.set_reuse_address(true)?;
                 udp.set_reuse_port(true)?;
+                udp.set_multicast_loop_v4(false)?;
                 if let Some(udp_buffer) = self.buffer {
                     udp.set_send_buffer_size(udp_buffer)?;
                     udp.set_recv_buffer_size(udp_buffer)?;
@@ -44,6 +45,7 @@ impl EndPoint {
                 udp.set_nonblocking(true)?;
                 udp.set_reuse_address(true)?;
                 udp.set_reuse_port(true)?;
+                udp.set_multicast_loop_v6(false)?;
                 if let Some(udp_buffer) = self.buffer {
                     udp.set_send_buffer_size(udp_buffer)?;
                     udp.set_recv_buffer_size(udp_buffer)?;
