@@ -7,7 +7,7 @@ use tokio_util::codec::BytesCodec;
 use tokio_util::udp::UdpFramed;
 
 impl EndPoint {
-    fn setup_udp(&self, localaddr: SocketAddr) -> Result<UdpSocket> {
+    fn setup_udp(&self, localaddr: SocketAddr, join_multicast: bool) -> Result<UdpSocket> {
         use socket2::*;
 
         let udp_ip = self.addr.ip();
@@ -27,13 +27,14 @@ impl EndPoint {
                 }
                 udp.bind(&sockaddr)?;
                 if is_multicast {
-                    let mcast_if = match self.multicast_interface_address {
-                        Some(ref mcast_if) => mcast_if,
-                        None => &Ipv4Addr::UNSPECIFIED,
-                    };
-                    udp.join_multicast_v4(addr, mcast_if)
-                        .context("cannot join group")?;
-
+                    if join_multicast {
+                        let mcast_if = match self.multicast_interface_address {
+                            Some(ref mcast_if) => mcast_if,
+                            None => &Ipv4Addr::UNSPECIFIED,
+                        };
+                        udp.join_multicast_v4(addr, mcast_if)
+                            .context("cannot join group")?;
+                    }
                     if let Some(ttl) = self.multicast_ttl {
                         udp.set_multicast_ttl_v4(ttl)?;
                     }
@@ -52,13 +53,14 @@ impl EndPoint {
                 }
                 udp.bind(&sockaddr)?;
                 if is_multicast {
-                    let mcast_idx = match self.multicast_interface_index {
-                        Some(mcast_idx) => mcast_idx,
-                        None => 0,
-                    };
+                    if join_multicast {
+                        let mcast_idx = match self.multicast_interface_index {
+                            Some(mcast_idx) => mcast_idx,
+                            None => 0,
+                        };
 
-                    udp.join_multicast_v6(addr, mcast_idx)?;
-
+                        udp.join_multicast_v6(addr, mcast_idx)?;
+                    }
                     if let Some(hops) = self.multicast_hops {
                         udp.set_multicast_hops_v6(hops)?;
                     }
@@ -73,7 +75,7 @@ impl EndPoint {
     }
 
     pub fn make_input(&self) -> anyhow::Result<UdpFramed<BytesCodec>> {
-        let udp = self.setup_udp(self.addr)?;
+        let udp = self.setup_udp(self.addr, true)?;
 
         eprintln!("Input {:#?}", self);
 
@@ -93,7 +95,7 @@ impl EndPoint {
             },
             0,
         );
-        let udp = self.setup_udp(localaddr)?;
+        let udp = self.setup_udp(localaddr, false)?;
 
         eprintln!("Output {:#?}", self);
 
