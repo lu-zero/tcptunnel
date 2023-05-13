@@ -1,5 +1,5 @@
 use std::convert::TryInto;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
@@ -15,8 +15,8 @@ use ringbuf::HeapProducer as Producer;
 use ringbuf::HeapRb as RingBuffer;
 use speexdsp::resampler::*;
 use tokio::runtime::Builder;
-use tokio_util::codec::BytesCodec;
-use tokio_util::udp::UdpFramed;
+
+
 
 use tcptunnel::{to_endpoint, EndPoint};
 use tracing::{debug, info, warn};
@@ -330,7 +330,7 @@ impl Playback {
             let mut fell_behind = false;
             let mut print = 0;
 
-            let stream = input_endpoint(&e)?;
+            let stream = e.make_input()?;
 
             let map = stream
                 .map_err(|e| {
@@ -528,7 +528,7 @@ impl Record {
 
         async fn udp_output(e: &EndPoint, recv: &Receiver<Bytes>) -> anyhow::Result<()> {
             let addr = e.addr;
-            let (sink, _stream) = output_endpoint(&e)?.split();
+            let (sink, _stream) = e.make_output()?.split();
 
             let read = recv.stream().map(move |msg| Ok((msg, addr)));
 
@@ -574,34 +574,6 @@ struct Opt {
 
     #[clap(subcommand)]
     command: Cmd,
-}
-
-fn input_endpoint(e: &EndPoint) -> anyhow::Result<UdpFramed<BytesCodec>> {
-    let udp = e.setup_udp(e.addr)?;
-
-    eprintln!("Input {:#?}", e);
-
-    Ok(UdpFramed::new(udp, BytesCodec::new()))
-}
-
-fn output_endpoint(e: &EndPoint) -> anyhow::Result<UdpFramed<BytesCodec>> {
-    let localaddr = SocketAddr::new(
-        if let Some(addr) = e.multicast_interface_address {
-            addr.into()
-        } else {
-            if e.addr.is_ipv4() {
-                Ipv4Addr::UNSPECIFIED.into()
-            } else {
-                Ipv6Addr::UNSPECIFIED.into()
-            }
-        },
-        0,
-    );
-    let udp = e.setup_udp(localaddr)?;
-
-    eprintln!("Output {:#?}", e);
-
-    Ok(UdpFramed::new(udp, BytesCodec::new()))
 }
 
 fn input_device(dev: &str) -> Result<Device> {

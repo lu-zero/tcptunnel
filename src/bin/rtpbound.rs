@@ -12,8 +12,8 @@ use rtp::header::Header;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
-use tokio_util::codec::BytesCodec;
-use tokio_util::udp::UdpFramed;
+
+
 use tracing::Instrument;
 use webrtc_util::Unmarshal;
 
@@ -62,9 +62,7 @@ impl Opt {
 
         for (e, send) in self.input.iter().zip(senders) {
             let addr = e.addr;
-            let udp = e.setup_udp(e.addr)?;
-
-            let udp_stream = UdpFramed::new(udp, BytesCodec::new());
+            let udp_stream = e.make_input()?;
 
             let mut now = Instant::now();
             let mut size: usize = 0;

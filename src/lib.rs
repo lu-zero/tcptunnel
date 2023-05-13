@@ -7,7 +7,7 @@ use tokio_util::codec::BytesCodec;
 use tokio_util::udp::UdpFramed;
 
 impl EndPoint {
-    pub fn setup_udp(&self, localaddr: SocketAddr) -> Result<UdpSocket> {
+    fn setup_udp(&self, localaddr: SocketAddr) -> Result<UdpSocket> {
         use socket2::*;
 
         let udp_ip = self.addr.ip();
@@ -72,6 +72,14 @@ impl EndPoint {
         Ok(udp)
     }
 
+    pub fn make_input(&self) -> anyhow::Result<UdpFramed<BytesCodec>> {
+        let udp = self.setup_udp(self.addr)?;
+
+        eprintln!("Input {:#?}", self);
+
+        Ok(UdpFramed::new(udp, BytesCodec::new()))
+    }
+
     pub fn make_output(&self) -> anyhow::Result<UdpFramed<BytesCodec>> {
         let localaddr = SocketAddr::new(
             if let Some(addr) = self.multicast_interface_address {
@@ -86,6 +94,8 @@ impl EndPoint {
             0,
         );
         let udp = self.setup_udp(localaddr)?;
+
+        eprintln!("Output {:#?}", self);
 
         Ok(UdpFramed::new(udp, BytesCodec::new()))
     }

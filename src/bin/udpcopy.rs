@@ -9,7 +9,7 @@ use tcptunnel::{to_endpoint, EndPoint};
 
 use clap::Parser;
 
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+
 
 #[derive(Debug, Parser)]
 #[clap(name = "udpcopy")]
@@ -38,32 +38,14 @@ struct Opt {
 impl Opt {
     fn input_endpoint(&self) -> anyhow::Result<UdpFramed<BytesCodec>> {
         let e = &self.input;
-        let udp = e.setup_udp(e.addr)?;
 
-        eprintln!("Input {:#?}", e);
-
-        Ok(UdpFramed::new(udp, BytesCodec::new()))
+        e.make_input()
     }
 
     fn output_endpoint(&self) -> anyhow::Result<UdpFramed<BytesCodec>> {
         let e = &self.output;
-        let localaddr = SocketAddr::new(
-            if let Some(addr) = e.multicast_interface_address {
-                addr.into()
-            } else {
-                if e.addr.is_ipv4() {
-                    Ipv4Addr::UNSPECIFIED.into()
-                } else {
-                    Ipv6Addr::UNSPECIFIED.into()
-                }
-            },
-            0,
-        );
-        let udp = e.setup_udp(localaddr)?;
 
-        eprintln!("Output {:#?}", e);
-
-        Ok(UdpFramed::new(udp, BytesCodec::new()))
+        e.make_output()
     }
 }
 

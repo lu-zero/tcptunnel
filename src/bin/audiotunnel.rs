@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
@@ -14,8 +14,8 @@ use futures::stream::{StreamExt, TryStreamExt};
 use futures::TryFutureExt;
 use ringbuf::HeapRb as RingBuffer;
 use tokio::runtime::Runtime;
-use tokio_util::codec::BytesCodec;
-use tokio_util::udp::UdpFramed;
+
+
 
 use tcptunnel::{to_endpoint, EndPoint};
 use tracing::{debug, info, warn};
@@ -288,7 +288,7 @@ impl Playback {
         });
 
         async fn udp_input(e: &EndPoint, send: &Sender<Bytes>) -> anyhow::Result<()> {
-            let stream = input_endpoint(&e)?;
+            let stream = e.make_input()?;
 
             let map = stream
                 .map_err(|e| {
@@ -394,7 +394,7 @@ impl Record {
         ) -> anyhow::Result<()> {
             let mut print = 0u32;
             let addr = e.addr;
-            let (sink, _stream) = output_endpoint(&e)?.split();
+            let (sink, _stream) = e.make_output()?.split();
 
             let read = recv.stream().chunks(samples).map(move |buf| {
                 let mut out = [0u8; MAX_PACKET];
@@ -458,34 +458,6 @@ struct Opt {
 
     #[clap(subcommand)]
     command: Cmd,
-}
-
-fn input_endpoint(e: &EndPoint) -> anyhow::Result<UdpFramed<BytesCodec>> {
-    let udp = e.setup_udp(e.addr)?;
-
-    eprintln!("Input {:#?}", e);
-
-    Ok(UdpFramed::new(udp, BytesCodec::new()))
-}
-
-fn output_endpoint(e: &EndPoint) -> anyhow::Result<UdpFramed<BytesCodec>> {
-    let localaddr = SocketAddr::new(
-        if let Some(addr) = e.multicast_interface_address {
-            addr.into()
-        } else {
-            if e.addr.is_ipv4() {
-                Ipv4Addr::UNSPECIFIED.into()
-            } else {
-                Ipv6Addr::UNSPECIFIED.into()
-            }
-        },
-        0,
-    );
-    let udp = e.setup_udp(localaddr)?;
-
-    eprintln!("Output {:#?}", e);
-
-    Ok(UdpFramed::new(udp, BytesCodec::new()))
 }
 
 fn input_device(dev: &str) -> Result<Device> {
