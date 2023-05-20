@@ -6,7 +6,69 @@ use tokio::net::*;
 use tokio_util::codec::BytesCodec;
 use tokio_util::udp::UdpFramed;
 
-impl EndPoint {
+use url::Url;
+
+pub fn to_endpoint(s: &str) -> Result<EndPoint> {
+    let u = Url::parse(s)?;
+
+    let end = match u.scheme() {
+        "udp" => {
+            let socks = u.socket_addrs(|| Some(5555))?;
+            let addr = *socks
+                .first()
+                .ok_or(anyhow::anyhow!("No address for name {}", s))?;
+
+            let query = u.query_pairs().collect::<HashMap<_, _>>();
+
+            let mut multicast_interface_address = None;
+            let mut multicast_interface_index = None;
+
+            if let Some(s) = query.get("multicast") {
+                if addr.is_ipv4() {
+                    multicast_interface_address = Some(s.parse()?);
+                } else {
+                    multicast_interface_index = Some(s.parse()?);
+                }
+            }
+
+            let multicast_ttl = query.get("multicast_ttl").map(|m| m.parse()).transpose()?;
+            let multicast_hops = query.get("multicast_hops").map(|m| m.parse()).transpose()?;
+            let buffer = query.get("buffer").map(|m| m.parse()).transpose()?;
+
+            EndPoint::Udp(UdpEndPoint {
+                multicast_interface_address,
+                multicast_interface_index,
+                multicast_ttl,
+                multicast_hops,
+                buffer,
+                addr,
+            })
+        }
+        _ => {
+            bail!("Only udp is supported {:?}", u)
+        }
+    };
+
+    Ok(end)
+}
+
+#[derive(Debug, Clone)]
+pub struct UdpEndPoint {
+    /// UDP multicast interface address (IPv4 only)
+    pub multicast_interface_address: Option<Ipv4Addr>,
+    /// UDP multicast interface index (IPv6 only)
+    pub multicast_interface_index: Option<u32>,
+    /// UDP address in `ip:port` format
+    pub addr: SocketAddr,
+    /// IPv4 Multicast TTL
+    pub multicast_ttl: Option<u32>,
+    /// IPv6 Multicast Hops
+    pub multicast_hops: Option<u32>,
+    /// UDP OS buffer size
+    pub buffer: Option<usize>,
+}
+
+impl UdpEndPoint {
     fn setup_udp(&self, localaddr: SocketAddr, join_multicast: bool) -> Result<UdpSocket> {
         use socket2::*;
 
@@ -103,60 +165,32 @@ impl EndPoint {
     }
 }
 
-use url::Url;
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum EndPoint {
+    Udp(UdpEndPoint),
+}
 
-pub fn to_endpoint(s: &str) -> Result<EndPoint> {
-    let u = Url::parse(s)?;
-
-    if u.scheme() != "udp" {
-        bail!("Only udp is supported {:?}", u);
-    }
-
-    let socks = u.socket_addrs(|| Some(5555))?;
-
-    let addr = *socks
-        .first()
-        .ok_or(anyhow::anyhow!("No address for name {}", s))?;
-
-    let query = u.query_pairs().collect::<HashMap<_, _>>();
-
-    let mut multicast_interface_address = None;
-    let mut multicast_interface_index = None;
-
-    if let Some(s) = query.get("multicast") {
-        if addr.is_ipv4() {
-            multicast_interface_address = Some(s.parse()?);
-        } else {
-            multicast_interface_index = Some(s.parse()?);
+use EndPoint::*;
+#[allow(unreachable_patterns)]
+impl EndPoint {
+    pub fn get_addr(&self) -> anyhow::Result<SocketAddr> {
+        match self {
+            Udp(udp) => Ok(udp.addr),
+            _ => bail!("Not a network endpoint"),
         }
     }
 
-    let multicast_ttl = query.get("multicast_ttl").map(|m| m.parse()).transpose()?;
-    let multicast_hops = query.get("multicast_hops").map(|m| m.parse()).transpose()?;
-    let buffer = query.get("buffer").map(|m| m.parse()).transpose()?;
-
-    Ok(EndPoint {
-        multicast_interface_address,
-        multicast_interface_index,
-        multicast_ttl,
-        multicast_hops,
-        buffer,
-        addr,
-    })
-}
-
-#[derive(Debug, Clone)]
-pub struct EndPoint {
-    /// UDP multicast interface address (IPv4 only)
-    pub multicast_interface_address: Option<Ipv4Addr>,
-    /// UDP multicast interface index (IPv6 only)
-    pub multicast_interface_index: Option<u32>,
-    /// UDP address in `ip:port` format
-    pub addr: SocketAddr,
-    /// IPv4 Multicast TTL
-    pub multicast_ttl: Option<u32>,
-    /// IPv6 Multicast Hops
-    pub multicast_hops: Option<u32>,
-    /// UDP OS buffer size
-    pub buffer: Option<usize>,
+    pub fn make_udp_input(&self) -> anyhow::Result<UdpFramed<BytesCodec>> {
+        match self {
+            Udp(udp) => udp.make_input(),
+            _ => bail!("Not an udp endpoint"),
+        }
+    }
+    pub fn make_udp_output(&self) -> anyhow::Result<UdpFramed<BytesCodec>> {
+        match self {
+            Udp(udp) => udp.make_output(),
+            _ => bail!("Not an udp endpoint"),
+        }
+    }
 }

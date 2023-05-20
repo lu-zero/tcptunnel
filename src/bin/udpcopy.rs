@@ -2,14 +2,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use futures::stream::{StreamExt, TryStreamExt};
-use tokio_util::codec::BytesCodec;
-use tokio_util::udp::UdpFramed;
 
 use tcptunnel::{to_endpoint, EndPoint};
 
 use clap::Parser;
-
-
 
 #[derive(Debug, Parser)]
 #[clap(name = "udpcopy")]
@@ -35,48 +31,39 @@ struct Opt {
     verbose: bool,
 }
 
-impl Opt {
-    fn input_endpoint(&self) -> anyhow::Result<UdpFramed<BytesCodec>> {
-        let e = &self.input;
-
-        e.make_input()
-    }
-
-    fn output_endpoint(&self) -> anyhow::Result<UdpFramed<BytesCodec>> {
-        let e = &self.output;
-
-        e.make_output()
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let opt = Opt::parse();
 
-    let udp_stream = opt.input_endpoint()?;
-    let udp_sink = opt.output_endpoint()?;
-    let udp_addr = opt.output.addr;
+    match (opt.input, opt.output) {
+        (EndPoint::Udp(input), EndPoint::Udp(output)) => {
+            let udp_stream = input.make_input()?;
+            let udp_sink = output.make_output()?;
+            let udp_addr = output.addr;
 
-    let mut now = Instant::now();
-    let mut size: usize = 0;
+            let mut now = Instant::now();
+            let mut size: usize = 0;
 
-    let read = udp_stream.map_ok(move |(msg, _addr)| {
-        let elapsed = now.elapsed();
-        if elapsed > Duration::from_secs(1) {
-            eprint!(
-                "bps {:} last packet size {}\r",
-                (size as f32 / elapsed.as_millis() as f32) * 8000f32,
-                msg.len()
-            );
-            now = Instant::now();
-            size = 0;
-        } else {
-            size += msg.len();
+            let read = udp_stream.map_ok(move |(msg, _addr)| {
+                let elapsed = now.elapsed();
+                if elapsed > Duration::from_secs(1) {
+                    eprint!(
+                        "bps {:} last packet size {}\r",
+                        (size as f32 / elapsed.as_millis() as f32) * 8000f32,
+                        msg.len()
+                    );
+                    now = Instant::now();
+                    size = 0;
+                } else {
+                    size += msg.len();
+                }
+                (msg.freeze(), udp_addr)
+            });
+
+            read.forward(udp_sink).await?;
         }
-        (msg.freeze(), udp_addr)
-    });
-
-    read.forward(udp_sink).await?;
+        _ => anyhow::bail!("Unsupported schemes"),
+    }
 
     Ok(())
 }

@@ -15,8 +15,6 @@ use futures::TryFutureExt;
 use ringbuf::HeapRb as RingBuffer;
 use tokio::runtime::Runtime;
 
-
-
 use tcptunnel::{to_endpoint, EndPoint};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -288,7 +286,7 @@ impl Playback {
         });
 
         async fn udp_input(e: &EndPoint, send: &Sender<Bytes>) -> anyhow::Result<()> {
-            let stream = e.make_input()?;
+            let stream = e.make_udp_input()?;
 
             let map = stream
                 .map_err(|e| {
@@ -393,8 +391,8 @@ impl Record {
             samples: usize,
         ) -> anyhow::Result<()> {
             let mut print = 0u32;
-            let addr = e.addr;
-            let (sink, _stream) = e.make_output()?.split();
+            let addr = e.get_addr()?;
+            let (sink, _stream) = e.make_udp_output()?.split();
 
             let read = recv.stream().chunks(samples).map(move |buf| {
                 let mut out = [0u8; MAX_PACKET];

@@ -13,7 +13,6 @@ use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 
-
 use tracing::Instrument;
 use webrtc_util::Unmarshal;
 
@@ -61,8 +60,8 @@ impl Opt {
             .unzip();
 
         for (e, send) in self.input.iter().zip(senders) {
-            let addr = e.addr;
-            let udp_stream = e.make_input()?;
+            let addr = e.get_addr()?;
+            let udp_stream = e.make_udp_input()?;
 
             let mut now = Instant::now();
             let mut size: usize = 0;
@@ -123,13 +122,13 @@ async fn main() -> Result<()> {
     for e in opt.output {
         let mut now = Instant::now();
         let mut size: usize = 0;
-        let udp_addr = e.addr;
+        let udp_addr = e.get_addr()?;
         // let pb = m.add(ProgressBar::new(!0).with_style(ProgressStyle::default_spinner()));
         // pb.println(format!("Output {:?}", e));
 
         let rx = tx.subscribe();
         let stream = BroadcastStream::new(rx);
-        let (sink, _stream) = e.make_output()?.split();
+        let (sink, _stream) = e.make_udp_output()?.split();
         let sink = sink.sink_map_err(anyhow::Error::new);
         let read = stream
             .map_err(|e| {
