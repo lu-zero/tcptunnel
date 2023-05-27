@@ -1,40 +1,12 @@
-use std::io;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use bytes::BytesMut;
 use futures::stream::{StreamExt, TryStreamExt};
 use tokio::net::*;
-use tokio_util::codec::{BytesCodec, Decoder, FramedRead, FramedWrite};
+use tokio_util::codec::{BytesCodec, FramedRead, FramedWrite};
 use tokio_util::udp::UdpFramed;
 
-struct ChunkDecoder {
-    size: usize,
-}
-
-// const PACKET_SIZE: usize = 1316;
-
-impl ChunkDecoder {
-    pub fn new(size: usize) -> Self {
-        ChunkDecoder { size }
-    }
-}
-
-impl Decoder for ChunkDecoder {
-    type Item = BytesMut;
-    type Error = std::io::Error;
-
-    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<BytesMut>, io::Error> {
-        // println!("Decoding {}", buf.len());
-        if buf.len() >= self.size {
-            let out = buf.split_to(self.size);
-            buf.reserve(self.size);
-            Ok(Some(out))
-        } else {
-            Ok(None)
-        }
-    }
-}
+use tcptunnel::ChunkDecoder;
 
 impl Opt {
     fn setup_udp(&self, addr: SocketAddr) -> Result<UdpSocket> {

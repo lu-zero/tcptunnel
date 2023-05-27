@@ -14,6 +14,10 @@ use tokio_util::udp::UdpFramed;
 
 use url::Url;
 
+mod chunk;
+
+pub use chunk::*;
+
 pub fn to_endpoint(s: &str) -> Result<EndPoint> {
     let u = Url::parse(s)?;
 
