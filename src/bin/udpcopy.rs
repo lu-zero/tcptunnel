@@ -1,9 +1,7 @@
-use std::time::{Duration, Instant};
-
 use anyhow::Result;
-use futures::stream::{StreamExt, TryStreamExt};
+use futures::stream::StreamExt;
 
-use tcptunnel::{to_endpoint, EndPoint};
+use tcptunnel::{to_endpoint, EndPoint, EndPointSink, EndPointStream};
 
 use clap::Parser;
 
@@ -35,35 +33,9 @@ struct Opt {
 async fn main() -> Result<()> {
     let opt = Opt::parse();
 
-    match (opt.input, opt.output) {
-        (EndPoint::Udp(input), EndPoint::Udp(output)) => {
-            let udp_stream = input.make_input()?;
-            let udp_sink = output.make_output()?;
-            let udp_addr = output.addr;
+    let input = opt.input.make_stream()?;
+    let output = opt.output.make_sink()?;
 
-            let mut now = Instant::now();
-            let mut size: usize = 0;
-
-            let read = udp_stream.map_ok(move |(msg, _addr)| {
-                let elapsed = now.elapsed();
-                if elapsed > Duration::from_secs(1) {
-                    eprint!(
-                        "bps {:} last packet size {}\r",
-                        (size as f32 / elapsed.as_millis() as f32) * 8000f32,
-                        msg.len()
-                    );
-                    now = Instant::now();
-                    size = 0;
-                } else {
-                    size += msg.len();
-                }
-                (msg.freeze(), udp_addr)
-            });
-
-            read.forward(udp_sink).await?;
-        }
-        _ => anyhow::bail!("Unsupported schemes"),
-    }
-
+    Box::into_pin(input).forward(Box::into_pin(output)).await?;
     Ok(())
 }

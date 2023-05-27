@@ -1,8 +1,14 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use bytes::Bytes;
+use futures::prelude::{Sink, Stream};
+use futures::stream::TryStreamExt;
+use pin_project::pin_project;
 use tokio::net::*;
+use tokio::time::Instant;
 use tokio_util::codec::BytesCodec;
 use tokio_util::udp::UdpFramed;
 
@@ -66,6 +72,13 @@ pub struct UdpEndPoint {
     pub multicast_hops: Option<u32>,
     /// UDP OS buffer size
     pub buffer: Option<usize>,
+}
+
+pub trait EndPointStream {
+    fn make_stream(&self) -> anyhow::Result<Box<dyn Stream<Item = Result<Bytes, std::io::Error>>>>;
+}
+pub trait EndPointSink {
+    fn make_sink(&self) -> anyhow::Result<Box<dyn Sink<Bytes, Error = std::io::Error>>>;
 }
 
 impl UdpEndPoint {
@@ -165,10 +178,110 @@ impl UdpEndPoint {
     }
 }
 
+#[pin_project]
+struct UdpSink {
+    #[pin]
+    inner: UdpFramed<BytesCodec>,
+    addr: SocketAddr,
+}
+
+impl Sink<Bytes> for UdpSink {
+    type Error = <UdpFramed<BytesCodec> as Sink<(Bytes, SocketAddr)>>::Error;
+
+    fn poll_ready(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), Self::Error>> {
+        <UdpFramed<BytesCodec> as futures::Sink<(Bytes, std::net::SocketAddr)>>::poll_ready(
+            self.project().inner,
+            cx,
+        )
+    }
+
+    fn start_send(
+        self: std::pin::Pin<&mut Self>,
+        item: Bytes,
+    ) -> std::result::Result<(), Self::Error> {
+        let addr = self.addr;
+        self.project().inner.start_send((item, addr))
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), Self::Error>> {
+        <UdpFramed<BytesCodec> as futures::Sink<(Bytes, std::net::SocketAddr)>>::poll_flush(
+            self.project().inner,
+            cx,
+        )
+    }
+
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), Self::Error>> {
+        <UdpFramed<BytesCodec> as futures::Sink<(Bytes, std::net::SocketAddr)>>::poll_close(
+            self.project().inner,
+            cx,
+        )
+    }
+}
+
+impl EndPointStream for UdpEndPoint {
+    fn make_stream(&self) -> anyhow::Result<Box<dyn Stream<Item = Result<Bytes, std::io::Error>>>> {
+        let input = self.make_input()?;
+        let mut now = Instant::now();
+        let mut size: usize = 0;
+
+        let read = input.map_ok(move |(msg, _addr)| {
+            let elapsed = now.elapsed();
+            if elapsed > Duration::from_secs(1) {
+                eprint!(
+                    "bps {:} last packet size {}\r",
+                    (size as f32 / elapsed.as_millis() as f32) * 8000f32,
+                    msg.len()
+                );
+                now = Instant::now();
+                size = 0;
+            } else {
+                size += msg.len();
+            }
+            msg.freeze()
+        });
+
+        Ok(Box::new(read))
+    }
+}
+impl EndPointSink for UdpEndPoint {
+    fn make_sink(&self) -> anyhow::Result<Box<dyn Sink<Bytes, Error = std::io::Error>>> {
+        let inner = self.make_output()?;
+
+        Ok(Box::new(UdpSink {
+            inner,
+            addr: self.addr,
+        }))
+    }
+}
+
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum EndPoint {
     Udp(UdpEndPoint),
+}
+
+impl EndPointStream for EndPoint {
+    fn make_stream(&self) -> anyhow::Result<Box<dyn Stream<Item = Result<Bytes, std::io::Error>>>> {
+        match self {
+            Udp(udp) => udp.make_stream(),
+        }
+    }
+}
+impl EndPointSink for EndPoint {
+    fn make_sink(&self) -> anyhow::Result<Box<dyn Sink<Bytes, Error = std::io::Error>>> {
+        match self {
+            Udp(udp) => udp.make_sink(),
+        }
+    }
 }
 
 use EndPoint::*;
