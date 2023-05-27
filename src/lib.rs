@@ -7,10 +7,10 @@ use bytes::Bytes;
 use futures::prelude::{Sink, Stream};
 use futures::stream::TryStreamExt;
 use pin_project::pin_project;
-use tokio::io::stdin;
+use tokio::io::{stdin, stdout};
 use tokio::net::*;
 use tokio::time::Instant;
-use tokio_util::codec::{BytesCodec, FramedRead};
+use tokio_util::codec::{BytesCodec, FramedRead, FramedWrite};
 use tokio_util::udp::UdpFramed;
 
 use url::Url;
@@ -21,6 +21,13 @@ pub use chunk::*;
 
 pub fn to_endpoint(s: &str) -> Result<EndPoint> {
     let u = Url::parse(s)?;
+    let query = u.query_pairs().collect::<HashMap<_, _>>();
+
+    let packet_size = query
+        .get("packet_size")
+        .map(|m| m.parse())
+        .transpose()?
+        .unwrap_or(1316);
 
     let end = match u.scheme() {
         "udp" => {
@@ -55,17 +62,8 @@ pub fn to_endpoint(s: &str) -> Result<EndPoint> {
                 addr,
             })
         }
-        "stdin" => {
-            let query = u.query_pairs().collect::<HashMap<_, _>>();
-
-            let packet_size = query
-                .get("packet_size")
-                .map(|m| m.parse())
-                .transpose()?
-                .unwrap_or(1316);
-
-            EndPoint::Stdin(StdinEndPoint { packet_size })
-        }
+        "stdin" => EndPoint::Stdin(StdioEndPoint { packet_size }),
+        "stdout" => EndPoint::Stdout(StdioEndPoint { packet_size }),
         _ => {
             bail!("Only udp is supported {:?}", u)
         }
@@ -280,11 +278,11 @@ impl EndPointSink for UdpEndPoint {
 }
 
 #[derive(Debug, Clone)]
-pub struct StdinEndPoint {
+pub struct StdioEndPoint {
     packet_size: usize,
 }
 
-impl EndPointStream for StdinEndPoint {
+impl EndPointStream for StdioEndPoint {
     fn make_stream(&self) -> anyhow::Result<Box<dyn Stream<Item = Result<Bytes, std::io::Error>>>> {
         let stdin = stdin();
         let input = FramedRead::new(stdin, ChunkDecoder::new(self.packet_size));
@@ -311,11 +309,21 @@ impl EndPointStream for StdinEndPoint {
     }
 }
 
+impl EndPointSink for StdioEndPoint {
+    fn make_sink(&self) -> anyhow::Result<Box<dyn Sink<Bytes, Error = std::io::Error>>> {
+        let stdout = stdout();
+        let output = FramedWrite::new(stdout, BytesCodec::new());
+
+        Ok(Box::new(output))
+    }
+}
+
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum EndPoint {
     Udp(UdpEndPoint),
-    Stdin(StdinEndPoint),
+    Stdin(StdioEndPoint),
+    Stdout(StdioEndPoint),
 }
 
 impl EndPointStream for EndPoint {
@@ -323,7 +331,7 @@ impl EndPointStream for EndPoint {
         match self {
             Udp(udp) => udp.make_stream(),
             Stdin(stdin) => stdin.make_stream(),
-            //            _ => bail!("Unsupported"),
+            _ => bail!("Unsupported"),
         }
     }
 }
@@ -331,6 +339,7 @@ impl EndPointSink for EndPoint {
     fn make_sink(&self) -> anyhow::Result<Box<dyn Sink<Bytes, Error = std::io::Error>>> {
         match self {
             Udp(udp) => udp.make_sink(),
+            Stdout(stdout) => stdout.make_sink(),
             _ => bail!("Unsupported"),
         }
     }
