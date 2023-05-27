@@ -7,9 +7,10 @@ use bytes::Bytes;
 use futures::prelude::{Sink, Stream};
 use futures::stream::TryStreamExt;
 use pin_project::pin_project;
+use tokio::io::stdin;
 use tokio::net::*;
 use tokio::time::Instant;
-use tokio_util::codec::BytesCodec;
+use tokio_util::codec::{BytesCodec, FramedRead};
 use tokio_util::udp::UdpFramed;
 
 use url::Url;
@@ -53,6 +54,17 @@ pub fn to_endpoint(s: &str) -> Result<EndPoint> {
                 buffer,
                 addr,
             })
+        }
+        "stdin" => {
+            let query = u.query_pairs().collect::<HashMap<_, _>>();
+
+            let packet_size = query
+                .get("packet_size")
+                .map(|m| m.parse())
+                .transpose()?
+                .unwrap_or(1316);
+
+            EndPoint::Stdin(StdinEndPoint { packet_size })
         }
         _ => {
             bail!("Only udp is supported {:?}", u)
@@ -268,15 +280,50 @@ impl EndPointSink for UdpEndPoint {
 }
 
 #[derive(Debug, Clone)]
+pub struct StdinEndPoint {
+    packet_size: usize,
+}
+
+impl EndPointStream for StdinEndPoint {
+    fn make_stream(&self) -> anyhow::Result<Box<dyn Stream<Item = Result<Bytes, std::io::Error>>>> {
+        let stdin = stdin();
+        let input = FramedRead::new(stdin, ChunkDecoder::new(self.packet_size));
+        let mut now = Instant::now();
+        let mut size: usize = 0;
+
+        let read = input.map_ok(move |msg| {
+            let elapsed = now.elapsed();
+            if elapsed > Duration::from_secs(1) {
+                eprint!(
+                    "bps {:} last packet size {}\r",
+                    (size as f32 / elapsed.as_millis() as f32) * 8000f32,
+                    msg.len()
+                );
+                now = Instant::now();
+                size = 0;
+            } else {
+                size += msg.len();
+            }
+            msg.freeze()
+        });
+
+        Ok(Box::new(read))
+    }
+}
+
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum EndPoint {
     Udp(UdpEndPoint),
+    Stdin(StdinEndPoint),
 }
 
 impl EndPointStream for EndPoint {
     fn make_stream(&self) -> anyhow::Result<Box<dyn Stream<Item = Result<Bytes, std::io::Error>>>> {
         match self {
             Udp(udp) => udp.make_stream(),
+            Stdin(stdin) => stdin.make_stream(),
+            //            _ => bail!("Unsupported"),
         }
     }
 }
@@ -284,6 +331,7 @@ impl EndPointSink for EndPoint {
     fn make_sink(&self) -> anyhow::Result<Box<dyn Sink<Bytes, Error = std::io::Error>>> {
         match self {
             Udp(udp) => udp.make_sink(),
+            _ => bail!("Unsupported"),
         }
     }
 }

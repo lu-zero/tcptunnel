@@ -27,4 +27,17 @@ impl Decoder for ChunkDecoder {
             Ok(None)
         }
     }
+
+    fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        Ok(match self.decode(buf)? {
+            Some(buf) => Some(buf),
+            None => {
+                if buf.is_empty() {
+                    None
+                } else {
+                    Some(buf.split())
+                }
+            }
+        })
+    }
 }
