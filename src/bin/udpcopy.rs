@@ -12,6 +12,7 @@ The following uri syntaxes are supported:
   - multicast=[ipv4_interface or ipv6_index]
   - multicast_ttl=<u32> (IPv4-only)
   - multicast_hops=<u32> (IPv6-only)
+  - multicast_loop=<bool>
   - buffer=<usize>
 - stdin:// (Only as Input)
   With the following query arguments:

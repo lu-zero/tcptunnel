@@ -52,12 +52,18 @@ pub fn to_endpoint(s: &str) -> Result<EndPoint> {
             let multicast_ttl = query.get("multicast_ttl").map(|m| m.parse()).transpose()?;
             let multicast_hops = query.get("multicast_hops").map(|m| m.parse()).transpose()?;
             let buffer = query.get("buffer").map(|m| m.parse()).transpose()?;
+            let multicast_loop = query
+                .get("multicast_loop")
+                .map(|m| m.parse())
+                .transpose()?
+                .unwrap_or(false);
 
             EndPoint::Udp(UdpEndPoint {
                 multicast_interface_address,
                 multicast_interface_index,
                 multicast_ttl,
                 multicast_hops,
+                multicast_loop,
                 buffer,
                 addr,
             })
@@ -84,6 +90,8 @@ pub struct UdpEndPoint {
     pub multicast_ttl: Option<u32>,
     /// IPv6 Multicast Hops
     pub multicast_hops: Option<u32>,
+    /// local delivery of packets
+    pub multicast_loop: bool,
     /// UDP OS buffer size
     pub buffer: Option<usize>,
 }
@@ -109,7 +117,7 @@ impl UdpEndPoint {
                 udp.set_nonblocking(true)?;
                 udp.set_reuse_address(true)?;
                 udp.set_reuse_port(true)?;
-                udp.set_multicast_loop_v4(false)?;
+                udp.set_multicast_loop_v4(self.multicast_loop)?;
                 if let Some(udp_buffer) = self.buffer {
                     udp.set_send_buffer_size(udp_buffer)?;
                     udp.set_recv_buffer_size(udp_buffer)?;
@@ -135,7 +143,7 @@ impl UdpEndPoint {
                 udp.set_nonblocking(true)?;
                 udp.set_reuse_address(true)?;
                 udp.set_reuse_port(true)?;
-                udp.set_multicast_loop_v6(false)?;
+                udp.set_multicast_loop_v6(self.multicast_loop)?;
                 if let Some(udp_buffer) = self.buffer {
                     udp.set_send_buffer_size(udp_buffer)?;
                     udp.set_recv_buffer_size(udp_buffer)?;
