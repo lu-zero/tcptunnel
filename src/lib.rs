@@ -56,7 +56,7 @@ pub fn to_endpoint(s: &str) -> Result<EndPoint> {
                 .get("multicast_loop")
                 .map(|m| m.parse())
                 .transpose()?
-                .unwrap_or(false);
+                .unwrap_or(true);
 
             EndPoint::Udp(UdpEndPoint {
                 multicast_interface_address,
